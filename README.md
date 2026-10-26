@@ -68,6 +68,13 @@ make start     # → open http://127.0.0.1:8090/
 
 Run `make` (or `make help`) to list every target.
 
+### Native macOS app
+
+`make app` builds `Azeroth Survivors.app`: the native game with a launcher that downloads the
+game data on first run (resumable, checksummed), edits graphics and sound settings, and updates
+itself with Sparkle. `make release-mac` notarizes it and writes the dmg, zip and appcast. See
+[macos/README.md](macos/README.md).
+
 ## Controls
 
 See [CONTROLS.md](CONTROLS.md). The short version: **WASD** to move, **Space** to jump, **F**
