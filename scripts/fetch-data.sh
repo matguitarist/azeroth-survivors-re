@@ -28,13 +28,14 @@ fi
 
 mkdir -p "$DATA_DIR"
 
-if [ ! -f "$ZIP" ]; then
-    echo "downloading the game data (a WoW 1.12.1 client, ~5.5 GB)…"
-    echo "  $URL"
-    curl -L -C - -o "$ZIP" "$URL"
+# Always run curl: `-C -` resumes a partial zip and is a no-op on a complete one.
+if [ -f "$ZIP" ]; then
+    echo "resuming $ZIP"
 else
-    echo "resuming/using $ZIP"
+    echo "downloading the game data (a WoW 1.12.1 client, ~5.5 GB)…"
 fi
+echo "  $URL"
+curl -L -C - -o "$ZIP" "$URL"
 
 echo "extracting MPQs into ${DATA}…"
 mkdir -p "$DATA"
