@@ -10,7 +10,7 @@
 #                   else ad-hoc ("-"), which runs only on this Mac and turns updates off
 #   ARCHS           "arm64", "x86_64" or "arm64 x86_64" (universal); default this Mac's
 #   VERSION         CFBundleShortVersionString; default the crate's version
-#   BUILD           CFBundleVersion, which Sparkle compares; default the commit count
+#   BUILD           CFBundleVersion, which Sparkle compares; default from VERSION (1.2.3 → 1002003)
 #   REPO            owner/name hosting the releases; default GITHUB_REPOSITORY, else origin's
 #   NOTARY_PROFILE  `xcrun notarytool store-credentials` profile (default AzerothSurvivors), or
 #   NOTARY_KEY, NOTARY_KEY_ID, NOTARY_ISSUER   an App Store Connect API key (.p8 path), for CI
@@ -35,7 +35,12 @@ OUT="$ROOT/target/macos"
 APP="$OUT/$NAME.app"
 ARCHS="${ARCHS:-$(uname -m)}"
 VERSION="${VERSION:-$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)}"
-BUILD="${BUILD:-$(git rev-list --count HEAD)}"
+# Sparkle orders releases by CFBundleVersion, so it comes from the version (0.2.1 → 2001), never
+# from history: a squash merge or a rebase can't make it go backwards.
+if [ -z "${BUILD:-}" ]; then
+    IFS=. read -r v_major v_minor v_patch <<< "$VERSION"
+    BUILD=$(( ${v_major:-0} * 1000000 + ${v_minor:-0} * 1000 + ${v_patch%%[!0-9]*} ))
+fi
 if [ -z "${REPO:-}" ]; then
     REPO="${GITHUB_REPOSITORY:-$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')}"
 fi

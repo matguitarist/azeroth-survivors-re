@@ -44,6 +44,17 @@ struct LauncherView: View {
                 data.quickCheck()
             }
         }
+        .onChange(of: game.stuck) { _, stuck in
+            if stuck { Launcher.surface() } else if game.running { Launcher.resubmerge() }
+        }
+        .background {
+            Color.clear.alert("The game isn't starting", isPresented: .constant(game.stuck)) {
+                Button("Keep Waiting", role: .cancel) { game.keepWaiting() }
+                Button("Force Quit", role: .destructive) { game.forceQuit() }
+            } message: {
+                Text("It has been running for \(Int(GameProcess.stuckAfter)) seconds without opening its window. This usually means the sound output device isn't answering, for example a remote-desktop audio driver. Switching the sound output in System Settings, then trying again, usually fixes it.")
+            }
+        }
         .alert(item: $game.crash) { crash in
             Alert(title: Text("The game stopped unexpectedly"),
                   message: Text(crash.message + (crash.logTail.isEmpty ? "" : "\n\nThe log is in ~/Library/Logs/\(Paths.appName).")),

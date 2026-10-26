@@ -77,6 +77,20 @@ enum Launcher {
         NSApp.setActivationPolicy(.accessory)
     }
 
+    /// Show the launcher over a game that is still starting, to ask about it.
+    static func surface() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Back behind the game, once it is going again.
+    static func resubmerge() {
+        guard inSession else { return }
+        NSApp.hide(nil)
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     /// The game quit: come back, or quit with it, as Settings says.
     static func gameEnded(crashed: Bool) {
         inSession = false

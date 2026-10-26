@@ -148,6 +148,48 @@ private struct GameSettingsForm<Content: View>: View {
     }
 }
 
+/// One-click graphics levels: each sets the same six cvars. Balanced is the game's defaults.
+private enum QualityPreset: String, CaseIterable, Identifiable {
+    case performance = "Performance", balanced = "Balanced", quality = "Quality"
+    var id: String { rawValue }
+
+    /// The cvars a preset owns, with each one's default: render scale, MSAA, anisotropy, view
+    /// distance, ground clutter, weather.
+    static let keys: [(name: String, def: String)] = [
+        ("renderScale", "1"), ("gxMultisample", "1"), ("anisotropic", "1"),
+        ("farclip", "350"), ("WorldDetail", "1"), ("useWeatherShaders", "1"),
+    ]
+
+    var values: [String] {
+        switch self {
+        case .performance: ["0.75", "1", "1", "250", "0", "0"]
+        case .balanced: ["1", "1", "1", "350", "1", "1"]
+        case .quality: ["1", "4", "16", "550", "2", "1"]
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .performance: "75% render scale, shorter view distance, no clutter or weather. For older Macs or long battery play."
+        case .balanced: "Native resolution and the game's standard view distance."
+        case .quality: "4× anti-aliasing, 16× texture filtering, long view distance, dense ground clutter."
+        }
+    }
+
+    /// The preset the current settings match, if any.
+    @MainActor static func current(in config: GameConfig) -> QualityPreset? {
+        allCases.first { p in
+            zip(keys, p.values).allSatisfy { key, v in
+                Double(config.value(key.name, default: key.def)) == Double(v)
+            }
+        }
+    }
+
+    @MainActor func apply(to config: GameConfig) {
+        config.set(zip(Self.keys, values).map { ($0.name, $1, $0.def) })
+    }
+}
+
 private struct GraphicsSettings: View {
     @EnvironmentObject private var config: GameConfig
 
@@ -159,7 +201,22 @@ private struct GraphicsSettings: View {
         let scale = c("renderScale", "1").number()
         let farclip = c("farclip", "350").number { String(Int($0.rounded())) }
 
+        let preset = QualityPreset.current(in: config)
+
         GameSettingsForm {
+            Section("Preset") {
+                Picker("Graphics", selection: Binding(
+                    get: { preset?.rawValue ?? "custom" },
+                    set: { QualityPreset(rawValue: $0)?.apply(to: config) })) {
+                    ForEach(QualityPreset.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                    if preset == nil { Text("Custom").tag("custom") }
+                }
+                .pickerStyle(.segmented)
+                Text(preset?.summary ?? "Your own mix of the settings below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Display") {
                 Picker("Mode", selection: windowed.string) {
                     Text("Fullscreen").tag("0")

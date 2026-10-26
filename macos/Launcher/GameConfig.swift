@@ -29,6 +29,17 @@ final class GameConfig: ObservableObject {
         save()
     }
 
+    /// Several cvars in one save: `(name, value, default)`.
+    func set(_ values: [(String, String, String)]) {
+        for (name, value, def) in values {
+            for key in cvars.keys where key.caseInsensitiveCompare(name) == .orderedSame {
+                cvars.removeValue(forKey: key)
+            }
+            if value != def { cvars[name] = value }
+        }
+        save()
+    }
+
     /// Back to every default: the file goes; the game recreates it.
     func reset() {
         try? FileManager.default.removeItem(at: url)

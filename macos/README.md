@@ -14,15 +14,22 @@ The launcher:
 
 - **Downloads the game data** on first run into `~/Library/Application Support/Azeroth Survivors/Data`.
   No Blizzard files ship in the app. It reads the archive.org zip's directory over HTTP Range
-  requests and fetches each MPQ's own byte range, so every file resumes on its own and only a
-  missing or damaged file is fetched again. Each file is checked against
-  `scripts/data-manifest.tsv` (SHA-256). Settings can point at an existing 1.12.1 `Data` folder instead.
-- **Edits the game's settings** (graphics, sound): the cvars in `benilla-config/config.toml`,
+  requests and fetches each MPQ's own byte range, three at a time (archive.org paces each
+  connection), so every file resumes on its own and only a missing or damaged file is fetched
+  again. Each file is checked against `scripts/data-manifest.tsv` (SHA-256). The Dock icon shows
+  the progress, and a notification says when it's done if the launcher isn't in front. Settings
+  can point at an existing 1.12.1 `Data` folder instead.
+- **Edits the game's settings** (graphics with Performance / Balanced / Quality presets, sound):
+  the cvars in `benilla-config/config.toml`,
   kept in Application Support (`$BENILLA_HOME`), never inside the bundle. The game is only told
   what it already reads at boot; the launcher edits the file only while the game is closed.
 - **Updates itself** with [Sparkle](https://sparkle-project.org) from the feed at
   `https://github.com/<repo>/releases/latest/download/appcast.xml`.
 - Logs the game to `~/Library/Logs/Azeroth Survivors/game.log` and shows its tail on a crash.
+- **Notices a stuck start:** if the game hasn't opened its window after 25 s (in practice an audio
+  driver not answering, such as a remote-desktop one), the launcher comes back with Keep Waiting
+  and Force Quit, and steps aside again by itself if the window appears.
+  `defaults write io.github.matguitarist.azeroth-survivors stuckAfter -float 3` shortens the wait for testing.
 
 ## Building
 
@@ -32,7 +39,8 @@ make release-mac    # also notarize + staple, and write target/macos/dist/{zip,d
 ```
 
 `scripts/macos-app.sh` holds the details and its environment knobs (`ARCHS="arm64 x86_64"` for a
-universal build, `SIGN_IDENTITY`, `VERSION`, `BUILD`). Without a Developer ID certificate it
+universal build, `SIGN_IDENTITY`, `VERSION`, `BUILD`). The build number Sparkle compares comes
+from the version (1.2.3 → 1002003), so it only ever grows with the version, whatever the history. Without a Developer ID certificate it
 signs ad-hoc: the app runs on the Mac that built it, with updates off.
 
 ## One-time setup for releases

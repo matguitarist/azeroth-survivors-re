@@ -49,11 +49,14 @@ final class GameData: ObservableObject {
     /// End the job, then show where things stand.
     private func end(_ final: State? = nil) {
         jobID = nil
+        DockProgress.show(nil)
         if let final { state = final } else { quickCheck() }
     }
 
     private func report(_ id: UUID, _ p: Progress) {
-        if jobID == id { state = .working(p) }
+        guard jobID == id else { return }
+        state = .working(p)
+        DockProgress.show(p.fraction)
     }
 
     static func loadManifest() -> [DataFile] {
@@ -117,8 +120,12 @@ final class GameData: ObservableObject {
         job?.cancel()
     }
 
-    /// Download, unpack and verify each missing file, one at a time. Partial downloads survive a
-    /// cancel or a quit and resume next time.
+    /// Files fetched at once: archive.org paces each connection, not the total, so a few side by
+    /// side multiply the speed.
+    static let parallel = 3
+
+    /// Download, unpack and verify the missing files, a few at a time. Partial downloads survive
+    /// a pause or a quit and resume next time.
     func download(_ files: [DataFile]) {
         guard !isBusy else { return }
         let dir = Paths.data
@@ -126,80 +133,82 @@ final class GameData: ObservableObject {
         let source = Prefs.dataURL
         let id = begin()
         state = .working(Progress(title: "Connecting…", detail: source.host ?? "", fraction: 0))
+        Notifier.requestPermission()
+        // Largest first: the long file starts at once and the small ones fill in beside it.
+        var queue = files.sorted { $0.size > $1.size }[...]
+        let tally = Tally(files: files)
 
         job = Task {
             do {
                 try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
                 try checkSpace(for: files, in: dir)
                 let zip = try await RemoteZip.open(source)
-                let total = Double(files.reduce(0) { $0 + $1.size })
-                var done: Int64 = 0
-                let meter = SpeedMeter()
-
-                for (i, f) in files.enumerated() {
-                    guard let entry = zip.entry(forFile: f.name) else {
-                        throw RemoteZip.Failure.notAZip("\(f.name) isn't in the download")
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for _ in 0..<Self.parallel {
+                        guard let f = queue.popFirst() else { break }
+                        group.addTask { try await self.fetch(f, from: zip, into: dir, work: work, job: id, tally: tally) }
                     }
-                    let start = try await zip.dataStart(of: entry)
-                    let packed = work.appendingPathComponent(f.name + ".packed")
-                    let label = "\(f.name) (\(i + 1) of \(files.count))"
-                    // Progress counts unpacked bytes; the packed size is within a percent or two.
-                    let scale = Double(f.size) / Double(max(entry.compressedSize, 1))
-                    let base = done
-                    let tick = Throttle()
-
-                    try await RangeDownloader(url: zip.url, start: start, length: entry.compressedSize, to: packed) { got in
-                        guard tick.ready() else { return }
-                        Task { @MainActor in
-                            let rate = meter.sample(got)
-                            let shown = base + Int64(Double(got) * scale)
-                            var detail = "\(label) — \(bytes(shown)) of \(bytes(Int64(total)))"
-                            if let rate { detail += " · \(bytes(Int64(rate)))/s" }
-                            if let rate, rate > 0 {
-                                detail += " · \(duration((total - Double(shown)) / rate)) left"
-                            }
-                            self.report(id, Progress(title: "Downloading game data…", detail: detail,
-                                                     fraction: Double(shown) / total))
+                    while try await group.next() != nil {
+                        if let f = queue.popFirst() {
+                            group.addTask { try await self.fetch(f, from: zip, into: dir, work: work, job: id, tally: tally) }
                         }
-                    }.run()
-
-                    meter.reset()
-                    let target = dir.appendingPathComponent(f.name)
-                    let unpacking = work.appendingPathComponent(f.name + ".part")
-                    let sum = try await Task.detached {
-                        try FileOps.inflate(packed, method: entry.method, to: unpacking) { used in
-                            guard tick.ready() else { return }
-                            Task { @MainActor in
-                                self.report(id, Progress(
-                                    title: "Unpacking…", detail: label,
-                                    fraction: Double(base + Int64(Double(used) * scale)) / total))
-                            }
-                        }
-                    }.value
-                    try? FileManager.default.removeItem(at: packed)
-                    guard sum == f.sha256 else {
-                        try? FileManager.default.removeItem(at: unpacking)
-                        throw RemoteZip.Failure.notAZip("\(f.name) failed its checksum; try again")
                     }
-                    try? FileManager.default.removeItem(at: target)
-                    try FileManager.default.moveItem(at: unpacking, to: target)
-                    done += f.size
                 }
                 try? FileManager.default.removeItem(at: work)
                 end()
+                if state == .ready { Notifier.post("The game is ready to play.", detail: "\(bytes(tally.total)) downloaded.") }
             } catch is CancellationError {
                 end()
             } catch let e as URLError where e.code == .cancelled {
                 end()
             } catch {
                 end(.failed(error.localizedDescription))
+                Notifier.post("The game data download stopped.", detail: error.localizedDescription)
             }
         }
     }
 
-    /// Refuse to start when the disk can't hold the unpacked files plus the largest packed one.
+    /// One file: its byte range of the zip, unpacked, hash-checked, moved into place.
+    private func fetch(_ f: DataFile, from zip: RemoteZip, into dir: URL, work: URL, job id: UUID, tally: Tally) async throws {
+        guard let entry = zip.entry(forFile: f.name) else {
+            throw RemoteZip.Failure.notAZip("\(f.name) isn't in the download")
+        }
+        let start = try await zip.dataStart(of: entry)
+        let packed = work.appendingPathComponent(f.name + ".packed")
+        // Progress counts unpacked bytes; the packed size is within a percent or two.
+        let scale = Double(f.size) / Double(max(entry.compressedSize, 1))
+        let tick = Throttle()
+
+        try await RangeDownloader(url: zip.url, start: start, length: entry.compressedSize, to: packed) { got in
+            guard tick.ready() else { return }
+            Task { @MainActor in
+                tally.set(f.name, Int64(Double(got) * scale))
+                self.report(id, tally.progress())
+            }
+        }.run()
+
+        tally.unpacking(f.name)
+        report(id, tally.progress())
+        let target = dir.appendingPathComponent(f.name)
+        let unpacking = work.appendingPathComponent(f.name + ".part")
+        let sum = try await Task.detached {
+            try FileOps.inflate(packed, method: entry.method, to: unpacking) { _ in }
+        }.value
+        try? FileManager.default.removeItem(at: packed)
+        guard sum == f.sha256 else {
+            try? FileManager.default.removeItem(at: unpacking)
+            throw RemoteZip.Failure.notAZip("\(f.name) failed its checksum; try again")
+        }
+        try? FileManager.default.removeItem(at: target)
+        try FileManager.default.moveItem(at: unpacking, to: target)
+        tally.finished(f.name)
+        report(id, tally.progress())
+    }
+
+    /// Refuse to start when the disk can't hold the unpacked files plus the packed ones in flight.
     private func checkSpace(for files: [DataFile], in dir: URL) throws {
-        let need = files.reduce(0) { $0 + $1.size } + (files.map(\.size).max() ?? 0)
+        let inFlight = files.map(\.size).sorted(by: >).prefix(Self.parallel).reduce(0, +)
+        let need = files.reduce(0) { $0 + $1.size } + inFlight
         let values = try dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         if let free = values.volumeAvailableCapacityForImportantUsage, free < need {
             throw SpaceError(need: need, free: free)
@@ -226,6 +235,50 @@ final class Throttle: @unchecked Sendable {
         guard now.timeIntervalSince(last) >= 0.1 else { return false }
         last = now
         return true
+    }
+}
+
+/// Bytes per file across the parallel downloads, summed into one progress line.
+@MainActor
+final class Tally {
+    let total: Int64
+    private let count: Int
+    private var got: [String: Int64] = [:]
+    private var sizes: [String: Int64] = [:]
+    private var unpackingNow: Set<String> = []
+    private var done = 0
+    private let meter = SpeedMeter()
+
+    init(files: [DataFile]) {
+        total = files.reduce(0) { $0 + $1.size }
+        count = files.count
+        for f in files { sizes[f.name] = f.size }
+    }
+
+    func set(_ name: String, _ bytes: Int64) { got[name] = min(bytes, sizes[name] ?? bytes) }
+
+    func unpacking(_ name: String) {
+        got[name] = sizes[name]
+        unpackingNow.insert(name)
+    }
+
+    func finished(_ name: String) {
+        unpackingNow.remove(name)
+        done += 1
+    }
+
+    func progress() -> GameData.Progress {
+        let shown = got.values.reduce(0, +)
+        let rate = meter.sample(shown)
+        var detail = "\(bytes(shown)) of \(bytes(total))"
+        if let rate, rate > 0 {
+            detail += " · \(bytes(Int64(rate)))/s · \(duration(Double(total - shown) / rate)) left"
+        }
+        if !unpackingNow.isEmpty {
+            detail += " · unpacking \(unpackingNow.sorted().joined(separator: ", "))"
+        }
+        let title = count == 1 ? "Downloading game data…" : "Downloading game data… (\(done) of \(count) files)"
+        return GameData.Progress(title: title, detail: detail, fraction: total > 0 ? Double(shown) / Double(total) : 0)
     }
 }
 

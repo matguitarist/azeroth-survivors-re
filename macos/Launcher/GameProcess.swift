@@ -7,6 +7,9 @@ final class GameProcess: ObservableObject {
     @Published private(set) var running = false
     /// Set when the game exits abnormally: a short message and the end of its log.
     @Published var crash: Crash?
+    /// The game has run a while without opening its window: something it waits on at startup
+    /// (in practice an audio driver) is not answering. Clears itself if the window appears.
+    @Published private(set) var stuck = false
 
     struct Crash: Identifiable {
         let id = UUID()
@@ -15,6 +18,14 @@ final class GameProcess: ObservableObject {
     }
 
     private var process: Process?
+    private var watchdog: Task<Void, Never>?
+    private var killedByUser = false
+
+    /// How long the game may take to open its window; the `stuckAfter` default overrides it.
+    static var stuckAfter: TimeInterval {
+        let v = UserDefaults.standard.double(forKey: "stuckAfter")
+        return v > 0 ? v : 25
+    }
     /// Called on the main actor when the game quits; the flag is true for a crash.
     var onExit: ((Bool) -> Void)?
 
@@ -54,6 +65,8 @@ final class GameProcess: ObservableObject {
             try p.run()
             process = p
             running = true
+            killedByUser = false
+            watch(for: Self.stuckAfter)
         } catch {
             crash = Crash(message: "The game could not start: \(error.localizedDescription)", logTail: "")
         }
@@ -62,6 +75,12 @@ final class GameProcess: ObservableObject {
     private func finished(status: Int32, reason: Process.TerminationReason, after seconds: TimeInterval) {
         running = false
         process = nil
+        stuck = false
+        watchdog?.cancel()
+        if killedByUser {
+            onExit?(true) // back to the launcher, without a crash report the player asked for
+            return
+        }
         if reason == .exit && status == 0 {
             onExit?(false)
             return
@@ -71,6 +90,50 @@ final class GameProcess: ObservableObject {
             message: "The game \(how) after \(duration(seconds)).",
             logTail: Self.tail(of: Paths.gameLog, lines: 40))
         onExit?(true)
+    }
+
+    /// Check the log for the window every half second; flag `stuck` past the deadline.
+    private func watch(for seconds: TimeInterval) {
+        watchdog?.cancel()
+        let deadline = Date().addingTimeInterval(seconds)
+        watchdog = Task { [weak self] in
+            while true {
+                // A cancelled sleep throws: stop there, or this pass would run on with its old,
+                // expired deadline and flag `stuck` again right after "Keep Waiting".
+                do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
+                guard let self, self.running else { return }
+                if Self.windowOpened() {
+                    self.stuck = false
+                    return
+                }
+                if Date() >= deadline { self.stuck = true }
+            }
+        }
+    }
+
+    /// The game logs this line as its window is created, after the audio device is open.
+    private static func windowOpened() -> Bool {
+        guard let data = try? Data(contentsOf: Paths.gameLog) else { return false }
+        return data.range(of: Data("Creating new window".utf8)) != nil
+    }
+
+    func keepWaiting() {
+        stuck = false
+        watch(for: Self.stuckAfter)
+    }
+
+    /// Stop a game that is not responding: ask, then insist. A thread blocked in a driver call
+    /// may never see the polite signal.
+    func forceQuit() {
+        guard let p = process else { return }
+        killedByUser = true
+        stuck = false
+        let pid = p.processIdentifier
+        p.terminate()
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if self.process?.processIdentifier == pid { kill(pid, SIGKILL) }
+        }
     }
 
     /// Bring the running game forward (the launcher's Play button while it runs).
