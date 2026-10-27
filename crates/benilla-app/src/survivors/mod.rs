@@ -17,6 +17,7 @@ mod hud;
 mod menu;
 mod minimap;
 mod mobility;
+mod panels;
 mod profile;
 mod units;
 
@@ -49,6 +50,7 @@ impl Plugin for SurvivorsPlugin {
             .init_resource::<profile::Profile>()
             .init_resource::<gear::GearCatalog>()
             .add_systems(Update, gear::build_catalog.before(hud::menu_preview))
+            .add_systems(Update, panels::build_panels)
             .init_resource::<hero::CamRig>()
             .init_resource::<hero::AimPoint>()
             .init_resource::<abilities::PendingHits>()
@@ -102,7 +104,7 @@ impl Plugin for SurvivorsPlugin {
                 (
                     hero::follow_map,
                     hud::menu_preview,
-                    hud::buttons,
+                    panels::buttons,
                     hud::keys,
                     hud::refresh_menu,
                     menu::restore_pick,

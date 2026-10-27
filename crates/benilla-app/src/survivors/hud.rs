@@ -18,9 +18,6 @@ use super::{Owned, Phase, Rng, Run, Selection, Stats};
 
 const GOLD: Color = Color::srgb(1.0, 0.82, 0.0);
 /// The mobility button's edge, an action button's 36 units.
-const EDGE: Color = Color::srgb(0.55, 0.45, 0.25);
-const BUTTON: Color = Color::srgba(0.18, 0.06, 0.04, 0.95);
-const BUTTON_HOT: Color = Color::srgba(0.36, 0.12, 0.06, 0.98);
 const DIM: Color = Color::srgb(0.6, 0.6, 0.6);
 pub(super) const DIM_GREY: Color = DIM;
 pub(super) const GOLD_TONE: Color = GOLD;
@@ -107,7 +104,7 @@ pub(super) struct OverStats;
 #[derive(Component)]
 pub(super) struct OverLine;
 #[derive(Component)]
-pub(super) struct OverStat(usize);
+pub(super) struct OverStat(pub(super) usize);
 
 /// An icon slot filled from the spell's `SpellIcon` once the client data is up.
 #[derive(Component)]
@@ -165,10 +162,6 @@ pub(super) enum UiAction {
     MainMenu,
     Quit,
 }
-
-/// The colour a button returns to when not hovered.
-#[derive(Component)]
-pub(super) struct BaseColor(Color);
 
 #[derive(Clone, Copy)]
 pub(super) enum Choice {
@@ -240,20 +233,6 @@ fn centered(font: &Handle<Font>, s: impl Into<String>, size: f32, color: Color) 
     (
         text(font, s, size, color),
         TextLayout::new_with_justify(Justify::Center),
-    )
-}
-
-fn button(action: UiAction, base: Color) -> impl Bundle {
-    edged_button(action, base, EDGE)
-}
-
-fn edged_button(action: UiAction, base: Color, edge: Color) -> impl Bundle {
-    (
-        Button,
-        action,
-        BaseColor(base),
-        BackgroundColor(base),
-        BorderColor::all(edge),
     )
 }
 
@@ -797,7 +776,7 @@ pub(super) fn setup_hud(
             root.spawn(centered(f, "Click a card, or press 1, 2 or 3", 14.0, DIM));
         });
 
-    // --- Pause. ---
+    // --- Pause; [`super::panels`] builds its dialog once the glue art is in. ---
     commands
         .spawn((
             PauseRoot,
@@ -808,39 +787,15 @@ pub(super) fn setup_hud(
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
-                row_gap: Val::Px(12.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.4)),
             GlobalZIndex(430),
             Visibility::Hidden,
             bevy::ui::FocusPolicy::Pass,
-        ))
-        .with_children(|root| {
-            root.spawn(centered(f, "Paused", 46.0, GOLD));
-            for (label, action) in [
-                ("Resume", UiAction::Resume),
-                ("Abandon run", UiAction::MainMenu),
-                ("Quit game", UiAction::Quit),
-            ] {
-                root.spawn((
-                    button(action, BUTTON),
-                    Node {
-                        width: Val::Px(240.0),
-                        justify_content: JustifyContent::Center,
-                        padding: UiRect::axes(Val::Px(20.0), Val::Px(8.0)),
-                        border: UiRect::all(Val::Px(2.0)),
-                        border_radius: BorderRadius::all(Val::Px(4.0)),
-                        ..default()
-                    },
-                ))
-                .with_children(|b| {
-                    b.spawn(text(f, label, 20.0, Color::WHITE));
-                });
-            }
-        });
+        ));
 
-    // --- Results. ---
+    // --- Results; its dialog too. ---
     commands
         .spawn((
             OverRoot,
@@ -860,82 +815,7 @@ pub(super) fn setup_hud(
             ))),
             GlobalZIndex(440),
             Visibility::Hidden,
-        ))
-        .with_children(|root| {
-            root.spawn((OverTitle, centered(f, "", 64.0, GOLD)));
-            root.spawn((
-                OverLine,
-                centered(f, "", 18.0, Color::srgb(0.85, 0.78, 0.6)),
-            ));
-            // The run in numbers, one tile each.
-            root.spawn(Node {
-                column_gap: Val::Px(12.0),
-                margin: UiRect::vertical(Val::Px(14.0)),
-                ..default()
-            })
-            .with_children(|row| {
-                for (i, label) in ["Survived", "Level", "Kills", "Damage", "Bosses"]
-                    .into_iter()
-                    .enumerate()
-                {
-                    row.spawn((
-                        Node {
-                            width: Val::Px(128.0),
-                            flex_direction: FlexDirection::Column,
-                            align_items: AlignItems::Center,
-                            padding: UiRect::axes(Val::Px(10.0), Val::Px(12.0)),
-                            row_gap: Val::Px(4.0),
-                            border: UiRect::all(Val::Px(1.0)),
-                            border_radius: BorderRadius::all(Val::Px(8.0)),
-                            ..default()
-                        },
-                        BackgroundGradient::from(LinearGradient::to_bottom(vec![
-                            ColorStop::percent(Color::srgba(0.2, 0.14, 0.05, 0.92), 0.0),
-                            ColorStop::percent(Color::srgba(0.04, 0.03, 0.02, 0.94), 100.0),
-                        ])),
-                        BorderColor::all(EDGE),
-                    ))
-                    .with_children(|tile| {
-                        tile.spawn((OverStat(i), centered(f, "", 26.0, Color::WHITE)));
-                        tile.spawn(centered(f, label, 12.0, DIM));
-                    });
-                }
-            });
-            root.spawn((OverStats, centered(f, "", 15.0, DIM)));
-            root.spawn((
-                edged_button(UiAction::MainMenu, BUTTON, GOLD),
-                Node {
-                    width: Val::Px(260.0),
-                    justify_content: JustifyContent::Center,
-                    padding: UiRect::axes(Val::Px(20.0), Val::Px(11.0)),
-                    margin: UiRect::top(Val::Px(8.0)),
-                    border: UiRect::all(Val::Px(2.0)),
-                    border_radius: BorderRadius::all(Val::Px(4.0)),
-                    ..default()
-                },
-                BoxShadow::new(
-                    Color::srgba(1.0, 0.7, 0.2, 0.35),
-                    Val::Px(0.0),
-                    Val::Px(0.0),
-                    Val::Px(0.0),
-                    Val::Px(16.0),
-                ),
-            ))
-            .with_children(|b| {
-                b.spawn(text(f, "Play again", 22.0, GOLD));
-            });
-            root.spawn((
-                button(UiAction::Quit, Color::NONE),
-                Node {
-                    justify_content: JustifyContent::Center,
-                    padding: UiRect::axes(Val::Px(16.0), Val::Px(6.0)),
-                    ..default()
-                },
-            ))
-            .with_children(|b| {
-                b.spawn(text(f, "Quit game", 15.0, DIM));
-            });
-        });
+        ));
 }
 
 /// The menu's hero is the run's hero: respawned whenever the pick changes.
@@ -1142,35 +1022,6 @@ pub(super) fn looks_for(
     }
     out.sort_by_key(|&(_, r, s)| (r, s));
     out
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn buttons(
-    mut presses: Query<
-        (&Interaction, &UiAction, &BaseColor, &mut BackgroundColor),
-        Changed<Interaction>,
-    >,
-    mut next: ResMut<NextState<Phase>>,
-    mut exit: MessageWriter<AppExit>,
-    phase: Res<State<Phase>>,
-) {
-    for (interaction, action, base, mut bg) in &mut presses {
-        match interaction {
-            Interaction::Hovered => bg.0 = BUTTON_HOT,
-            Interaction::None => bg.0 = base.0,
-            Interaction::Pressed => {
-                bg.0 = BUTTON_HOT;
-                match (*action, *phase.get()) {
-                    (UiAction::Resume, Phase::Paused) => next.set(Phase::Playing),
-                    (UiAction::MainMenu, Phase::Paused | Phase::GameOver) => next.set(Phase::Menu),
-                    (UiAction::Quit, Phase::Paused | Phase::GameOver) => {
-                        exit.write(AppExit::Success);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
 }
 
 pub(super) fn keys(
