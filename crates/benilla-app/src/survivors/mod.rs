@@ -42,6 +42,10 @@ pub(crate) struct SurvivorsPlugin;
 impl Plugin for SurvivorsPlugin {
     fn build(&self, app: &mut App) {
         // Present before `OnEnter(InWorld)`, where the UI lifecycle decides not to load FrameXML.
+        // The tuned plugins leave gamepads out, as 1.12 has none; this mode reads them.
+        if !app.is_plugin_added::<bevy::gilrs::GilrsPlugin>() {
+            app.add_plugins(bevy::gilrs::GilrsPlugin);
+        }
         app.insert_resource(crate::run_mode::CaptureMode)
             .add_plugins(grade::plugin)
             .init_state::<Phase>()
