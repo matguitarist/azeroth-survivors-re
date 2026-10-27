@@ -164,7 +164,7 @@ private enum QualityPreset: String, CaseIterable, Identifiable {
         switch self {
         case .performance: ["0.75", "1", "1", "250", "0", "0"]
         case .balanced: ["1", "1", "1", "350", "1", "1"]
-        case .quality: ["1", "4", "16", "550", "2", "1"]
+        case .quality: ["1", "1", "16", "550", "2", "1"]
         }
     }
 
@@ -172,7 +172,7 @@ private enum QualityPreset: String, CaseIterable, Identifiable {
         switch self {
         case .performance: "75% render scale, shorter view distance, no clutter or weather. For older Macs or long battery play."
         case .balanced: "Native resolution and the game's standard view distance."
-        case .quality: "4× anti-aliasing, 16× texture filtering, long view distance, dense ground clutter."
+        case .quality: "16× texture filtering, long view distance, dense ground clutter. Anti-aliasing stays separate: at Retina resolutions it costs about as much as everything else together."
         }
     }
 
