@@ -10,6 +10,7 @@ mod cards;
 mod data;
 mod enemies;
 mod fill;
+mod gear;
 mod grade;
 mod hero;
 mod hud;
@@ -46,6 +47,8 @@ impl Plugin for SurvivorsPlugin {
             .init_resource::<Selection>()
             .init_resource::<Run>()
             .init_resource::<profile::Profile>()
+            .init_resource::<gear::GearCatalog>()
+            .add_systems(Update, gear::build_catalog.before(hud::menu_preview))
             .init_resource::<hero::CamRig>()
             .init_resource::<hero::AimPoint>()
             .init_resource::<abilities::PendingHits>()
@@ -80,6 +83,7 @@ impl Plugin for SurvivorsPlugin {
                     abilities::apply_hits,
                     enemies::tick_marks,
                     enemies::drop_loot,
+                    gear::boss_drops,
                     enemies::collect_gems,
                     hero::hero_vitals,
                 )
@@ -104,6 +108,7 @@ impl Plugin for SurvivorsPlugin {
                     menu::restore_pick,
                     menu::build_menu,
                     menu::rebuild_zones,
+                    menu::refresh_armor,
                     menu::menu_clicks,
                     menu::refresh_menu_ui.before(crate::glue::GlueVisuals),
                     cards::deal_cards,
@@ -172,6 +177,8 @@ pub(super) struct Selection {
     /// `(display, race, sex)`, one per race and sex the class's trainers come in.
     pub looks: Vec<(u32, u8, u8)>,
     pub look: Option<usize>,
+    /// The look's customization dials.
+    pub custom: units::Custom,
     /// An index into [`data::MAPS`].
     pub map: usize,
     /// The battleground the world is standing in: the last one entered (or the saved pick at
@@ -270,6 +277,12 @@ pub(super) struct Run {
     pub won: bool,
     /// The zone this run's win opened, for the results.
     pub opened: Option<usize>,
+    /// Bosses killed, and the armor they dropped this run.
+    pub boss_kills: u32,
+    pub loot: Vec<String>,
+    /// What the armor worn adds, [`gear::bonus`].
+    pub gear_might: f32,
+    pub gear_hp: f32,
     /// Seconds since the hero fell, while the death plays out.
     pub dead_t: Option<f32>,
     pub next_guid: u64,
@@ -306,6 +319,10 @@ impl Default for Run {
             rings: 0,
             won: false,
             opened: None,
+            boss_kills: 0,
+            loot: Vec::new(),
+            gear_might: 0.0,
+            gear_hp: 0.0,
             dead_t: None,
             next_guid: 1,
             damage_done: 0.0,
@@ -335,6 +352,8 @@ impl Run {
             7 | 11 | 3 | 4 => s.max_hp += 15.0,
             _ => s.speed += 0.5,
         }
+        s.might += self.gear_might;
+        s.max_hp *= 1.0 + self.gear_hp;
         for &(p, level) in &self.passives {
             let v = p.per_level * f32::from(level);
             match p.stat {

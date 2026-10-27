@@ -208,6 +208,7 @@ pub(super) fn drive(
                     }
                     run.elapsed = data::VICTORY_SECS * 2.0 / 3.0;
                     run.bosses = 3;
+                    run.boss_kills = 3;
                     run.rings = 4;
                 }
                 next.set(Phase::Playing);

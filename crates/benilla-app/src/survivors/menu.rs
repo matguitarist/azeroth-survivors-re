@@ -10,15 +10,17 @@ use bevy::ui_render::ui_material::MaterialNode;
 
 use super::hud::{looks_for, rgb, start_run, HudFont, MenuRoot};
 use super::profile::{zone_order, Profile};
+use super::units::Custom;
 use super::{data, Phase, Rng, Run, Selection};
 use crate::char_select::race_name;
 use crate::glue::art::{class_tc, race_tc, tc_rect, GlueArt, DIM, GOLD, NAME_EDGE};
 use crate::glue::backdrop::{backdrop_border, tiled_bg_node};
 use crate::glue::widgets::{
-    abs, glue_button, icon_button, outlined_text, GlueBtnKind, GlueDisabled, GlueText, Hilight,
-    HoverLabel, LockHighlight,
+    abs, dial_arrow, glue_button, icon_button, outlined_text, GlueBtnKind, GlueDisabled, GlueText,
+    Hilight, HoverLabel, LockHighlight,
 };
 use crate::glue::GlueClicks;
+use crate::glue_strings::GlueStrings;
 
 /// The create screen's two race columns.
 const ALLIANCE: [u8; 4] = [1, 3, 4, 7];
@@ -28,9 +30,12 @@ const HORDE: [u8; 4] = [2, 5, 6, 8];
 const FRAME_BORDER: Color = Color::srgb(0.8, 0.8, 0.8);
 const FRAME_FILL: Color = Color::srgba(0.09, 0.09, 0.09, 0.85);
 
-/// The tower ends under the class grid and Randomize, where the create screen's appearance dials
-/// would start: there is nothing to customise here.
-const TOWER_H: f32 = 590.0;
+/// The tower ends under the class grid, the five appearance dials and Randomize.
+const TOWER_H: f32 = 690.0;
+/// The dials: the create screen's `CharacterCustomizationFrameTemplate` rows at this scale, so
+/// all five fit under the nine-class grid.
+const DIAL_TOP: f32 = 520.0;
+const DIAL_S: f32 = 0.75;
 
 /// The zone rows: the character-select row, compacted so every zone fits the 642-tall frame.
 const ROW_TOP: f32 = 44.0;
@@ -44,6 +49,8 @@ pub(super) enum MenuAction {
     Sex(u8),
     Class(usize),
     Map(usize),
+    /// A customization dial (0 skin, 1 face, 2 hair style, 3 hair color, 4 facial hair) and step.
+    Dial(u8, i8),
     Randomize,
     Enter,
 }
@@ -59,6 +66,18 @@ pub(super) struct RaceFace(u8);
 #[derive(Component)]
 pub(super) struct PickName;
 
+/// An armor slot's icon on the pick screen.
+#[derive(Component)]
+pub(super) struct ArmorSlot(super::gear::Slot);
+
+/// The line under the armor icons: the collection and its bonus, or the piece hovered.
+#[derive(Component)]
+pub(super) struct ArmorLine;
+
+/// A dial's label, "Skin Color 3/9".
+#[derive(Component)]
+pub(super) struct DialLabel(u8);
+
 /// The zone list, rebuilt when the profile changes what is open.
 #[derive(Component)]
 pub(super) struct ZoneFrame;
@@ -69,7 +88,8 @@ const LOCKED: Color = Color::srgb(0.5, 0.5, 0.5);
 const WON: Color = Color::srgb(0.25, 0.85, 0.25);
 
 /// The saved pick, `benilla-config/survivors-pick.txt` (`localStorage` on the page):
-/// `class race sex map`, restored at the menu so a reload keeps the last hero and zone.
+/// `class race sex map` and the five dials, restored at the menu so a reload keeps the last hero
+/// and zone.
 fn pick_path() -> Option<std::path::PathBuf> {
     crate::local_state::home().map(|h| h.join("survivors-pick.txt"))
 }
@@ -80,8 +100,14 @@ fn save_pick(sel: &Selection) {
         return;
     };
     if let Some(path) = pick_path() {
-        let _ =
-            crate::local_state::write_atomic(&path, &format!("{class} {race} {sex} {}", sel.map));
+        let c = sel.custom;
+        let _ = crate::local_state::write_atomic(
+            &path,
+            &format!(
+                "{class} {race} {sex} {} {} {} {} {} {}",
+                sel.map, c.skin, c.face, c.hair_style, c.hair_color, c.facial_hair
+            ),
+        );
     }
 }
 
@@ -90,6 +116,7 @@ fn save_pick(sel: &Selection) {
 /// starting zone.
 pub(super) fn restore_pick(
     creatures: Option<Res<crate::entities::Creatures>>,
+    char_create: Option<Res<crate::entities::CharCreate>>,
     profile: Res<Profile>,
     mut selection: ResMut<Selection>,
     mut done: Local<bool>,
@@ -97,11 +124,12 @@ pub(super) fn restore_pick(
     if *done {
         return;
     }
-    let Some(creatures) = creatures.as_deref() else {
+    let (Some(creatures), Some(char_create)) = (creatures.as_deref(), char_create.as_deref())
+    else {
         return;
     };
     *done = true;
-    restore_saved(creatures, &mut selection);
+    restore_saved(creatures, char_create, &mut selection);
     if !profile.is_open(selection.map) {
         if let Some(z) = zone_order().first() {
             selection.map = z.map;
@@ -111,7 +139,11 @@ pub(super) fn restore_pick(
     }
 }
 
-fn restore_saved(creatures: &crate::entities::Creatures, selection: &mut Selection) {
+fn restore_saved(
+    creatures: &crate::entities::Creatures,
+    char_create: &crate::entities::CharCreate,
+    selection: &mut Selection,
+) {
     let Some(text) = pick_path().and_then(|p| crate::local_state::read_to_string(&p).ok()) else {
         return;
     };
@@ -119,16 +151,25 @@ fn restore_saved(creatures: &crate::entities::Creatures, selection: &mut Selecti
         .split_whitespace()
         .filter_map(|t| t.parse().ok())
         .collect();
-    let [class, race, sex, map] = v[..] else {
+    let (&[class, race, sex, map], dials) = (v.split_at(v.len().min(4)).0, v.get(4..9)) else {
         return;
     };
+    if let Some(&[skin, face, hair_style, hair_color, facial_hair]) = dials {
+        selection.custom = Custom {
+            skin: skin as u8,
+            face: face as u8,
+            hair_style: hair_style as u8,
+            hair_color: hair_color as u8,
+            facial_hair: facial_hair as u8,
+        };
+    }
     if map < data::MAPS.len() {
         selection.map = map;
         selection.stage = map;
         selection.version += 1;
     }
     if class < data::CLASSES.len() {
-        let all = all_looks(creatures);
+        let all = all_looks(creatures, Some(char_create));
         if let Some(l) = find(&all[class], Some(race as u8), Some(sex as u8)) {
             set(selection, &all, class, l);
         }
@@ -136,10 +177,13 @@ fn restore_saved(creatures: &crate::entities::Creatures, selection: &mut Selecti
 }
 
 /// Every class's looks, `(display, race, sex)`, indexed like [`data::CLASSES`].
-fn all_looks(creatures: &crate::entities::Creatures) -> Vec<Vec<(u32, u8, u8)>> {
+fn all_looks(
+    creatures: &crate::entities::Creatures,
+    char_create: Option<&crate::entities::CharCreate>,
+) -> Vec<Vec<(u32, u8, u8)>> {
     data::CLASSES
         .iter()
-        .map(|c| looks_for(c, creatures))
+        .map(|c| looks_for(c, creatures, char_create))
         .collect()
 }
 
@@ -182,6 +226,8 @@ pub(super) fn build_menu(
             ));
         }
         zone_frame(ui, &art, f, &profile);
+
+        armor_strip(ui, f);
 
         // `CharSelectCharacterName`, GlueFontNormalHuge at BOTTOM (0,100).
         ui.spawn(Node {
@@ -397,6 +443,22 @@ fn tower(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
                 }
             });
 
+        // `CharacterCustomizationFrameTemplate` rows, centred under the class grid.
+        tower
+            .spawn(Node {
+                position_type: PositionType::Absolute,
+                left: px((206.0 - 198.0 * DIAL_S) / 2.0),
+                top: px(DIAL_TOP),
+                width: px(198.0 * DIAL_S),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            })
+            .with_children(|dials| {
+                for dial in 0..5u8 {
+                    dial_row(dials, art, f, dial);
+                }
+            });
+
         tower
             .spawn(Node {
                 position_type: PositionType::Absolute,
@@ -444,6 +506,243 @@ pub(super) fn rebuild_zones(
     commands
         .entity(root)
         .with_children(|ui| zone_frame(ui, &art, &font.0, &profile));
+}
+
+/// The armor worn, slot by slot, over the hero's name.
+fn armor_strip(ui: &mut ChildSpawnerCommands, f: &Handle<Font>) {
+    let px = Val::Px;
+    ui.spawn(Node {
+        position_type: PositionType::Absolute,
+        bottom: px(132.0),
+        width: Val::Percent(100.0),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::Center,
+        row_gap: px(4.0),
+        ..default()
+    })
+    .with_children(|col| {
+        col.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: px(4.0),
+            ..default()
+        })
+        .with_children(|row| {
+            for slot in super::gear::Slot::ALL {
+                row.spawn((
+                    ArmorSlot(slot),
+                    Interaction::default(),
+                    ImageNode {
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.6),
+                        ..default()
+                    },
+                    Node {
+                        width: px(30.0),
+                        height: px(30.0),
+                        border: UiRect::all(px(1.0)),
+                        ..default()
+                    },
+                    BorderColor::all(Color::srgba(0.6, 0.6, 0.6, 0.8)),
+                ));
+            }
+        });
+        outlined_text(
+            col,
+            Node::default(),
+            (),
+            ArmorLine,
+            GlueText {
+                text: "",
+                size: 12.0,
+                color: Color::WHITE,
+                wrap: false,
+            },
+            f,
+            1.0,
+        );
+    });
+}
+
+/// The armor strip: each slot's worn piece (its item icon, the quality's border) or the paper
+/// doll's empty slot, and the line under it.
+#[allow(clippy::type_complexity)]
+pub(super) fn refresh_armor(
+    selection: Res<Selection>,
+    profile: Res<Profile>,
+    catalog: Res<super::gear::GearCatalog>,
+    mut assets: Option<ResMut<benilla_assets::WorldAssets>>,
+    mut images: ResMut<Assets<Image>>,
+    mut slots: Query<(&ArmorSlot, &Interaction, &mut ImageNode, &mut BorderColor)>,
+    mut line: Query<&mut Text, With<ArmorLine>>,
+    mut shown: Local<Option<(Option<usize>, u32, usize)>>,
+) {
+    use super::gear::{sets, Slot};
+    let Some(class) = selection.class_def() else {
+        return;
+    };
+    let worn = profile.worn(class.id, &catalog);
+    let piece = |slot: Slot| {
+        worn.iter()
+            .find(|(s, _)| *s == slot)
+            .and_then(|&(s, set)| catalog.piece(class.id, set, s))
+    };
+    let key = (selection.class, profile.version, catalog.pieces.len());
+    if *shown != Some(key) {
+        if let Some(assets) = assets.as_deref_mut() {
+            *shown = Some(key);
+            for (slot, _, mut img, mut border) in &mut slots {
+                let worn = piece(slot.0);
+                let path = match worn.and_then(|p| p.icon.as_deref()) {
+                    Some(icon) => format!("{icon}.blp"),
+                    None => format!(
+                        "Interface\\PaperDoll\\UI-PaperDoll-Slot-{}.blp",
+                        slot.0.paper_doll()
+                    ),
+                };
+                match assets.sprite_texture(&path, &mut images) {
+                    Some(h) => {
+                        img.image = h;
+                        img.color = Color::WHITE;
+                    }
+                    None => img.color = Color::srgba(0.0, 0.0, 0.0, 0.6),
+                }
+                // Epic purple for a piece, grey for an empty slot.
+                *border = BorderColor::all(if worn.is_some() {
+                    Color::srgb(0.64, 0.21, 0.93)
+                } else {
+                    Color::srgba(0.6, 0.6, 0.6, 0.8)
+                });
+            }
+        }
+    }
+    let hovered = slots
+        .iter()
+        .find(|(_, i, _, _)| **i != Interaction::None)
+        .map(|(s, ..)| s.0);
+    let want = match hovered {
+        Some(slot) => match piece(slot) {
+            Some(p) => format!("{} ({})", p.name, sets(class.id)[p.set].name),
+            None => format!(
+                "{}: no piece yet. Bosses drop {} armor.",
+                slot.name(),
+                class.name
+            ),
+        },
+        None => {
+            let owned = catalog
+                .for_class(class.id)
+                .iter()
+                .filter(|p| profile.owns(class.id, p.set, p.slot))
+                .count();
+            let total = catalog.for_class(class.id).len();
+            let (might, hp) = super::gear::bonus(class.id, &profile, &catalog);
+            if owned == 0 {
+                format!("Armor 0/{total}: bosses drop pieces for your class")
+            } else {
+                format!(
+                    "Armor {owned}/{total}   +{:.0}% damage   +{:.0}% health",
+                    might * 100.0,
+                    hp * 100.0
+                )
+            }
+        }
+    };
+    if let Ok(mut t) = line.single_mut() {
+        if t.0 != want {
+            t.0 = want;
+        }
+    }
+}
+
+/// One dial: the create screen's label frame and arrows (`dial_row` in the create screen).
+fn dial_row(dials: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>, dial: u8) {
+    let s = DIAL_S;
+    let px = |v: f32| Val::Px(v * s);
+    dials
+        .spawn(Node {
+            width: px(198.0),
+            height: px(32.0),
+            ..default()
+        })
+        .with_children(|row| {
+            if let Some((frame, size)) = &art.label_frame {
+                for (left, width, tc) in [
+                    (-5.0, 25.0, [0.0, 0.1953125, 0.0, 1.0]),
+                    (20.0, 109.0, [0.1953125, 0.8046875, 0.0, 1.0]),
+                    (129.0, 25.0, [0.8046875, 1.0, 0.0, 1.0]),
+                ] {
+                    row.spawn((
+                        ImageNode {
+                            image: frame.clone(),
+                            rect: Some(tc_rect(*size, tc)),
+                            ..default()
+                        },
+                        abs(s, left, -16.0, width, 64.0),
+                    ));
+                }
+            }
+            outlined_text(
+                row,
+                Node {
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..abs(s, 20.0, 0.0, 109.0, 32.0)
+                },
+                (),
+                DialLabel(dial),
+                GlueText {
+                    text: "",
+                    size: 12.0,
+                    color: Color::WHITE,
+                    wrap: false,
+                },
+                f,
+                s,
+            );
+            dial_arrow(
+                row,
+                &art.arrow_left,
+                f,
+                MenuAction::Dial(dial, -1),
+                137.0,
+                "<",
+                s,
+            );
+            dial_arrow(
+                row,
+                &art.arrow_right,
+                f,
+                MenuAction::Dial(dial, 1),
+                166.0,
+                ">",
+                s,
+            );
+        });
+}
+
+/// The look's dials held inside what the race and sex offer.
+fn clamp_custom(sel: &mut Selection, cc: Option<&crate::entities::CharCreate>) {
+    let Some((race, sex)) = sel
+        .look
+        .and_then(|i| sel.looks.get(i))
+        .map(|&(_, r, s)| (r, s))
+    else {
+        return;
+    };
+    let Some(r) = cc.and_then(|c| c.0.ranges(race, sex)) else {
+        return;
+    };
+    let c = &mut sel.custom;
+    for (v, n) in [
+        (&mut c.skin, r.skin),
+        (&mut c.face, r.face),
+        (&mut c.hair_style, r.hair_style),
+        (&mut c.hair_color, r.hair_color),
+        (&mut c.facial_hair, r.facial_hair),
+    ] {
+        if *v >= n.max(1) {
+            *v = 0;
+        }
+    }
 }
 
 fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>, profile: &Profile) {
@@ -591,7 +890,9 @@ pub(super) fn menu_clicks(
     actions: Query<(Entity, &MenuAction)>,
     phase: Res<State<Phase>>,
     creatures: Option<Res<crate::entities::Creatures>>,
+    char_create: Option<Res<crate::entities::CharCreate>>,
     profile: Res<Profile>,
+    catalog: Res<super::gear::GearCatalog>,
     mut selection: ResMut<Selection>,
     mut run: ResMut<Run>,
     mut rng: ResMut<Rng>,
@@ -610,7 +911,7 @@ pub(super) fn menu_clicks(
     else {
         return;
     };
-    let all = all_looks(creatures);
+    let all = all_looks(creatures, char_create.as_deref());
     let cur = selection
         .look
         .and_then(|i| selection.looks.get(i))
@@ -625,6 +926,9 @@ pub(super) fn menu_clicks(
         }
         MenuAction::Enter => {
             if profile.is_open(selection.map) && start_run(&mut run, &mut selection) {
+                (run.gear_might, run.gear_hp) =
+                    super::gear::bonus(run.class.id, &profile, &catalog);
+                run.hp = run.stats().max_hp;
                 next.set(Phase::Playing);
             }
         }
@@ -637,6 +941,34 @@ pub(super) fn menu_clicks(
             if !picks.is_empty() {
                 let (c, l) = picks[rng.index(picks.len())];
                 set(&mut selection, &all, c, l);
+            }
+            let (_, race, sex) = selection.looks[selection.look.unwrap_or(0)];
+            if let Some(r) = char_create.as_deref().and_then(|c| c.0.ranges(race, sex)) {
+                let mut roll = |n: u8| rng.index(usize::from(n.max(1))) as u8;
+                selection.custom = Custom {
+                    skin: roll(r.skin),
+                    face: roll(r.face),
+                    hair_style: roll(r.hair_style),
+                    hair_color: roll(r.hair_color),
+                    facial_hair: roll(r.facial_hair),
+                };
+            }
+        }
+        MenuAction::Dial(dial, step) => {
+            if let (Some((race, sex)), Some(cc)) = (cur, char_create.as_deref()) {
+                if let Some(r) = cc.0.ranges(race, sex) {
+                    let c = &mut selection.custom;
+                    let (v, n) = match dial {
+                        0 => (&mut c.skin, r.skin),
+                        1 => (&mut c.face, r.face),
+                        2 => (&mut c.hair_style, r.hair_style),
+                        3 => (&mut c.hair_color, r.hair_color),
+                        _ => (&mut c.facial_hair, r.facial_hair),
+                    };
+                    let n = i16::from(n.max(1));
+                    *v = (i16::from(*v) + i16::from(step)).rem_euclid(n) as u8;
+                    selection.version += 1;
+                }
             }
         }
         // The class keeps the race and gender where it can.
@@ -669,6 +1001,7 @@ pub(super) fn menu_clicks(
             }
         }
     }
+    clamp_custom(&mut selection, char_create.as_deref());
     save_pick(&selection);
 }
 
@@ -690,15 +1023,23 @@ pub(super) fn refresh_menu_ui(
     )>,
     mut labels: Query<&mut Visibility, (With<HoverLabel>, Without<MenuAction>)>,
     mut faces: Query<(&RaceFace, &mut ImageNode)>,
-    mut name: Query<(&mut Text, &mut TextColor), With<PickName>>,
+    mut name: Query<(&mut Text, &mut TextColor), (With<PickName>, Without<DialLabel>)>,
+    mut dial_labels: Query<(&DialLabel, &mut Text), Without<PickName>>,
+    (char_create, strings): (
+        Option<Res<crate::entities::CharCreate>>,
+        Option<Res<GlueStrings>>,
+    ),
     mut cache: Local<(Option<u32>, bool, Vec<Vec<(u32, u8, u8)>>)>,
 ) {
-    let have = creatures.is_some();
+    let have = creatures.is_some() && char_create.is_some();
     if cache.0 != Some(selection.version) || cache.1 != have {
         *cache = (
             Some(selection.version),
             have,
-            creatures.as_deref().map(all_looks).unwrap_or_default(),
+            creatures
+                .as_deref()
+                .map(|c| all_looks(c, char_create.as_deref()))
+                .unwrap_or_default(),
         );
     }
     let all = &cache.2;
@@ -713,7 +1054,7 @@ pub(super) fn refresh_menu_ui(
             MenuAction::Sex(s) => cur.is_some_and(|c| c.1 == s),
             MenuAction::Class(i) => selection.class == Some(i),
             MenuAction::Map(i) => selection.map == i,
-            MenuAction::Randomize | MenuAction::Enter => false,
+            MenuAction::Dial(..) | MenuAction::Randomize | MenuAction::Enter => false,
         };
         if let Some(mut lock) = lock {
             if lock.0 != selected {
@@ -773,6 +1114,65 @@ pub(super) fn refresh_menu_ui(
                     img.rect = rect;
                 }
             }
+        }
+    }
+
+    // The dials, labelled as the create screen labels them, with where each stands.
+    let empty = GlueStrings::default();
+    let strings = strings.as_deref().unwrap_or(&empty);
+    let cc = char_create.as_deref().map(|c| &c.0);
+    for (dial, mut t) in &mut dial_labels {
+        let want = match cur {
+            Some((race, sex)) => {
+                let r = cc.and_then(|c| c.ranges(race, sex));
+                let hair = cc
+                    .and_then(|c| c.hair_customization(race))
+                    .unwrap_or("NORMAL");
+                let facial = cc
+                    .and_then(|c| c.facial_hair_customization(race, sex))
+                    .unwrap_or("NORMAL");
+                let c = selection.custom;
+                let (label, v, n) = match dial.0 {
+                    0 => (
+                        strings
+                            .text("CHAR_CUSTOMIZATION1_DESC", "Skin Color")
+                            .to_string(),
+                        c.skin,
+                        r.map_or(1, |r| r.skin),
+                    ),
+                    1 => (
+                        strings.text("CHAR_CUSTOMIZATION2_DESC", "Face").to_string(),
+                        c.face,
+                        r.map_or(1, |r| r.face),
+                    ),
+                    2 => (
+                        strings
+                            .text(&format!("HAIR_{hair}_STYLE"), "Hair Style")
+                            .to_string(),
+                        c.hair_style,
+                        r.map_or(1, |r| r.hair_style),
+                    ),
+                    3 => (
+                        strings
+                            .text(&format!("HAIR_{hair}_COLOR"), "Hair Color")
+                            .to_string(),
+                        c.hair_color,
+                        r.map_or(1, |r| r.hair_color),
+                    ),
+                    _ => (
+                        strings
+                            .text(&format!("FACIAL_HAIR_{facial}"), "Facial Hair")
+                            .to_string(),
+                        c.facial_hair,
+                        r.map_or(1, |r| r.facial_hair),
+                    ),
+                };
+                format!("{label} {}/{}", v + 1, n.max(1))
+            }
+            None => String::new(),
+        };
+        if t.0 != want {
+            t.0 = want;
         }
     }
 

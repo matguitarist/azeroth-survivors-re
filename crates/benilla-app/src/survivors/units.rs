@@ -21,6 +21,10 @@ const FIELD_VIRTUAL_ITEM_INFO: u16 = 40;
 const FIELD_AURA: u16 = 47;
 const FIELD_AURAFLAGS: u16 = 95;
 const FIELD_BYTES_2: u16 = 164;
+const FIELD_PLAYER_BYTES: u16 = 193;
+const FIELD_PLAYER_BYTES_2: u16 = 194;
+/// `PLAYER_VISIBLE_ITEM_1_0`, the first slot's item entry; 12 fields a slot.
+const FIELD_PLAYER_VISIBLE_ITEM: u16 = 260;
 
 /// `FactionTemplate.dbc`: friendly to players, and the hostile monster template.
 pub(super) const FACTION_FRIENDLY: u32 = 35;
@@ -110,6 +114,91 @@ pub(super) fn spawn_unit(commands: &mut Commands, spec: &UnitSpec, pos: Vec3, ya
             RunEntity,
         ))
         .id()
+}
+
+/// A character's customization, the create screen's five dials.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct Custom {
+    pub skin: u8,
+    pub face: u8,
+    pub hair_style: u8,
+    pub hair_color: u8,
+    pub facial_hair: u8,
+}
+
+pub(super) struct PlayerSpec<'a> {
+    pub serial: u64,
+    /// The race and sex's body (`ChrRaces`).
+    pub display: u32,
+    pub level: u32,
+    /// `UNIT_FIELD_BYTES_0`: race, class, gender, power type.
+    pub bytes0: u32,
+    pub custom: Custom,
+    /// `(EQUIPMENT_SLOT_*, item entry)`, entries whose templates are already cached.
+    pub items: &'a [(u8, u32)],
+    pub sheath: u8,
+}
+
+/// Spawn a player body: the world composites its skin, face and hair and dresses it from the
+/// item templates, as it would a player streamed in.
+pub(super) fn spawn_player(
+    commands: &mut Commands,
+    spec: &PlayerSpec,
+    pos: Vec3,
+    yaw: f32,
+) -> Entity {
+    let guid = spec.serial;
+    let c = spec.custom;
+    let mut pairs: Vec<(u16, u32)> = vec![
+        (0, guid as u32),
+        (1, (guid >> 32) as u32),
+        (2, 0x19),
+        (4, 1.0f32.to_bits()),
+        (FIELD_HEALTH, 100),
+        (FIELD_MAX_HEALTH, 100),
+        (FIELD_LEVEL, spec.level),
+        (FIELD_FACTION, FACTION_FRIENDLY),
+        (FIELD_BYTES_0, spec.bytes0),
+        (FIELD_BYTES_2, u32::from(spec.sheath)),
+        (
+            FIELD_PLAYER_BYTES,
+            u32::from(c.skin)
+                | u32::from(c.face) << 8
+                | u32::from(c.hair_style) << 16
+                | u32::from(c.hair_color) << 24,
+        ),
+        (FIELD_PLAYER_BYTES_2, u32::from(c.facial_hair)),
+    ];
+    for &(slot, entry) in spec.items {
+        pairs.push((FIELD_PLAYER_VISIBLE_ITEM + 12 * u16::from(slot), entry));
+    }
+    commands
+        .spawn((
+            Guid(guid),
+            NetEntity {
+                kind: benilla_protocol::EntityKind::Player,
+                display_id: Some(spec.display),
+                scale: 1.0,
+            },
+            ObjectStore(ObjectFields::from_pairs(&pairs)),
+            crate::creature_anim::MovementState::default(),
+            crate::net::ScriptedFacing,
+            Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)),
+            Visibility::default(),
+            RunEntity,
+        ))
+        .id()
+}
+
+/// Change what a player body shows: the world re-dresses it in place.
+pub(super) fn set_visible_items(store: &mut ObjectStore, items: &[(u8, u32)]) {
+    let mut pairs: Vec<(u16, u32)> = (0..19u16)
+        .map(|slot| (FIELD_PLAYER_VISIBLE_ITEM + 12 * slot, 0))
+        .collect();
+    for &(slot, entry) in items {
+        pairs[usize::from(slot)].1 = entry;
+    }
+    store.0.merge(ObjectFields::from_pairs(&pairs));
 }
 
 /// Spawn a generic GameObject showing `GameObjectDisplayInfo` row `display`.

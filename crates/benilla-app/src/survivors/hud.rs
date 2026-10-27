@@ -860,7 +860,12 @@ pub(super) fn menu_preview(
     mut run: ResMut<Run>,
     heroes: Query<Entity, With<Hero>>,
     world: benilla_world::world_point::WorldPoint,
-    mut shown: Local<Option<(usize, u32, usize)>>,
+    catalog: Res<super::gear::GearCatalog>,
+    profile: Res<super::profile::Profile>,
+    char_create: Option<Res<crate::entities::CharCreate>>,
+    #[allow(clippy::type_complexity)] mut shown: Local<
+        Option<(usize, u32, usize, super::units::Custom, Vec<(u8, u32)>)>,
+    >,
 ) {
     if *phase.get() != Phase::Menu {
         return;
@@ -868,7 +873,20 @@ pub(super) fn menu_preview(
     let want = selection
         .class
         .zip(selection.look.and_then(|i| selection.looks.get(i)).copied());
-    let key = want.map(|(c, l)| (c, l.0, selection.stage));
+    let items: Vec<(u8, u32)> = want
+        .map(|(c, (_, race, sex))| {
+            let class = &data::CLASSES[c];
+            let outfit = char_create
+                .as_deref()
+                .map_or(&[][..], |cc| cc.0.start_outfit(race, class.id, sex));
+            super::gear::hero_items(class, outfit, &profile, &catalog)
+        })
+        .unwrap_or_default();
+    // The catalog is in once it has pieces: until then the hero waits, so it isn't seen naked.
+    if catalog.pieces.is_empty() || char_create.is_none() {
+        return;
+    }
+    let key = want.map(|(c, l)| (c, l.0, selection.stage, selection.custom, items.clone()));
     if key == *shown && (key.is_none() || !heroes.is_empty()) {
         return;
     }
@@ -876,7 +894,11 @@ pub(super) fn menu_preview(
         commands.entity(e).despawn();
     }
     *shown = key;
-    let Some((class, (display, race, sex))) = want else {
+    let Some((class, (_, race, sex))) = want else {
+        return;
+    };
+    // A look is listed by a trainer's display; the hero wears the race and sex's own body.
+    let Some(display) = char_create.as_deref().and_then(|c| c.0.body_display(race, sex)) else {
         return;
     };
     let mut pos = hero::arena(selection.stage_def());
@@ -890,6 +912,8 @@ pub(super) fn menu_preview(
         display,
         race,
         sex,
+        selection.custom,
+        &items,
         serial,
         pos,
     );
@@ -1002,11 +1026,27 @@ pub(super) fn pick(
     }
 }
 
+/// The race and sex pairs a class can be, `(display, race, sex)`: every pair the create screen
+/// allows (`CharBaseInfo`), with the race and sex's body; before that catalog loads, the pairs its
+/// class trainers come in.
 pub(super) fn looks_for(
     class: &data::ClassDef,
     creatures: &crate::entities::Creatures,
+    char_create: Option<&crate::entities::CharCreate>,
 ) -> Vec<(u32, u8, u8)> {
     let mut out: Vec<(u32, u8, u8)> = Vec::new();
+    if let Some(cc) = char_create {
+        for race in 1..=8u8 {
+            for sex in 0..=1u8 {
+                if let (true, Some(d)) = (cc.0.allows(race, class.id), cc.0.body_display(race, sex)) {
+                    out.push((d, race, sex));
+                }
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
     for &d in class.looks {
         if let Some((race, sex)) = creatures.display_race_sex(d) {
             if !out.iter().any(|&(_, r, s)| r == race && s == sex) {
@@ -1084,10 +1124,11 @@ pub(super) fn keys(
 pub(super) fn refresh_menu(
     mut selection: ResMut<Selection>,
     creatures: Option<Res<crate::entities::Creatures>>,
+    char_create: Option<Res<crate::entities::CharCreate>>,
 ) {
     if let (Some(class), Some(creatures)) = (selection.class_def(), creatures.as_deref()) {
         if selection.looks.is_empty() {
-            let looks = looks_for(class, creatures);
+            let looks = looks_for(class, creatures, char_create.as_deref());
             if !looks.is_empty() {
                 selection.looks = looks;
                 selection.look = Some(0);
@@ -1661,6 +1702,11 @@ pub(super) fn refresh_results(
         ),
         (true, None) => selection.map_def().victory.to_string(),
         (false, _) => "The horde was too much this time.".to_string(),
+    };
+    let stats_line = if run.loot.is_empty() {
+        stats_line
+    } else {
+        format!("{stats_line}  Loot: {}.", run.loot.join(", "))
     };
     let values = [
         format!("{:02}:{:02}", secs / 60, secs % 60),

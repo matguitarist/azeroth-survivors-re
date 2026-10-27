@@ -6,7 +6,7 @@ use bevy::input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
 use super::data::{self, ClassDef};
-use super::units::{self, flat, wow_to_bevy, yaw_toward, Fx, Marks, UnitSpec};
+use super::units::{self, flat, wow_to_bevy, yaw_toward, Fx, Marks};
 use super::{Phase, Run, Selection};
 use crate::creature_anim::{move_flags, MovementState};
 use crate::net::{FieldChanged, Guid, ObjectStore};
@@ -93,13 +93,17 @@ pub(super) fn follow_map(
     }
 }
 
-/// The hero in the class trainer's look, weapons drawn.
+/// The hero: a player body of the picked race, sex and look, in the armor worn and the class's
+/// weapons, drawn. `items` are `(EQUIPMENT_SLOT_*, entry)` of templates [`super::gear`] cached.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_hero(
     commands: &mut Commands,
     class: &'static ClassDef,
     display: u32,
     race: u8,
     sex: u8,
+    custom: units::Custom,
+    items: &[(u8, u32)],
     serial: u64,
     pos: Vec3,
 ) -> Entity {
@@ -107,16 +111,15 @@ pub(super) fn spawn_hero(
         | u32::from(class.id) << 8
         | u32::from(sex) << 16
         | u32::from(class.power) << 24;
-    let e = units::spawn_unit(
+    let e = units::spawn_player(
         commands,
-        &UnitSpec {
+        &units::PlayerSpec {
             serial,
             display,
-            scale: 1.0,
             level: 60,
-            faction: units::FACTION_FRIENDLY,
             bytes0,
-            weapons: class.weapons,
+            custom,
+            items,
             sheath: class.sheath,
         },
         pos,

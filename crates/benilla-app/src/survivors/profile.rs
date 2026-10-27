@@ -2,12 +2,17 @@
 //! are open from the first boot; every other zone opens once the zone before it in the menu's
 //! order (by level) has been won, the first of them once any starting zone has.
 //!
+//! It also keeps the armor each class has collected ([`super::gear`]).
+//!
 //! Saved as `benilla-config/survivors-profile.txt` (`localStorage` on the page), one zone per
 //! line, `name\twins\truns\tbest_secs\tbest_kills`, keyed by name so a reordered or extended
-//! [`data::MAPS`] keeps every record.
+//! [`data::MAPS`] keeps every record, and one owned piece per line, `gear\tclass\tset\tslot`.
 
 use bevy::prelude::*;
 
+use std::collections::BTreeSet;
+
+use super::gear::{GearCatalog, Slot};
 use super::{data, Run, Selection};
 
 /// A zone whose weakest creature is at most this level is a starting zone.
@@ -25,6 +30,8 @@ pub(super) struct ZoneRecord {
 pub(super) struct Profile {
     /// Indexed like [`data::MAPS`].
     pub zones: Vec<ZoneRecord>,
+    /// Owned armor, `(class id, set, slot index)`.
+    pub gear: BTreeSet<(u8, u8, u8)>,
     /// Bumped on every change, so the menu rebuilds once.
     pub version: u32,
 }
@@ -33,6 +40,7 @@ impl Default for Profile {
     fn default() -> Self {
         let mut p = Self {
             zones: vec![ZoneRecord::default(); data::MAPS.len()],
+            gear: BTreeSet::new(),
             version: 0,
         };
         if let Some(text) = path().and_then(|p| crate::local_state::read_to_string(&p).ok()) {
@@ -51,6 +59,13 @@ impl Profile {
         for line in text.lines() {
             let mut f = line.split('\t');
             let Some(name) = f.next() else { continue };
+            if name == "gear" {
+                let v: Vec<u8> = f.filter_map(|v| v.parse().ok()).collect();
+                if let [class, set, slot] = v[..] {
+                    self.gear.insert((class, set, slot));
+                }
+                continue;
+            }
             let Some(i) = data::MAPS.iter().position(|m| m.name == name) else {
                 continue;
             };
@@ -65,7 +80,7 @@ impl Profile {
     }
 
     fn save(&self) {
-        let text: String = data::MAPS
+        let mut text: String = data::MAPS
             .iter()
             .zip(&self.zones)
             .filter(|(_, r)| r.runs > 0)
@@ -76,9 +91,46 @@ impl Profile {
                 )
             })
             .collect();
+        for (class, set, slot) in &self.gear {
+            text.push_str(&format!("gear\t{class}\t{set}\t{slot}\n"));
+        }
         if let Some(path) = path() {
             let _ = crate::local_state::write_atomic(&path, &text);
         }
+    }
+
+    pub fn owns(&self, class: u8, set: usize, slot: Slot) -> bool {
+        self.gear.contains(&(class, set as u8, slot.index() as u8))
+    }
+
+    /// Add a piece; false if it was owned already.
+    pub fn grant(&mut self, class: u8, set: usize, slot: Slot) -> bool {
+        let fresh = self.gear.insert((class, set as u8, slot.index() as u8));
+        if fresh {
+            self.version += 1;
+            self.save();
+        }
+        fresh
+    }
+
+    /// The set worn in each slot: the strongest owned. `WOW_SURVIVORS_GEAR=<set>` dresses the
+    /// hero in that whole set instead, for looking at the art.
+    pub fn worn(&self, class: u8, catalog: &GearCatalog) -> Vec<(Slot, usize)> {
+        let forced = crate::webenv::var("WOW_SURVIVORS_GEAR").and_then(|v| v.parse::<usize>().ok());
+        Slot::ALL
+            .iter()
+            .filter_map(|&slot| {
+                let owned = |set: &usize| match forced {
+                    Some(f) => *set == f,
+                    None => self.owns(class, *set, slot),
+                };
+                let best = (0..super::gear::sets(class).len())
+                    .rev()
+                    .filter(owned)
+                    .find(|&set| catalog.piece(class, set, slot).is_some())?;
+                Some((slot, best))
+            })
+            .collect()
     }
 
     pub fn won(&self, map: usize) -> bool {
