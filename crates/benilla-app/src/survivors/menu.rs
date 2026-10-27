@@ -53,6 +53,7 @@ pub(super) enum MenuAction {
     Dial(u8, i8),
     Randomize,
     Enter,
+    Quit,
 }
 
 /// On [`MenuRoot`] once the glue art is in and the screen is built.
@@ -274,6 +275,29 @@ pub(super) fn build_menu(
                 1.0,
             );
         });
+        // `CharacterSelectBackButton`'s place, BOTTOMRIGHT (-24,30): the game has nothing behind
+        // the pick screen to go back to, so it quits. A page has no quit.
+        if cfg!(not(target_arch = "wasm32")) {
+            ui.spawn(Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(24.0),
+                bottom: Val::Px(30.0),
+                ..default()
+            })
+            .with_children(|c| {
+                glue_button(
+                    c,
+                    &art,
+                    f,
+                    MenuAction::Quit,
+                    "Quit",
+                    150.0,
+                    38.0,
+                    GlueBtnKind::Small,
+                    1.0,
+                );
+            });
+        }
     });
 }
 
@@ -281,14 +305,18 @@ pub(super) fn build_menu(
 /// faction banners, the gender pair, the class grid, the class text and Randomize.
 fn tower(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
     let px = Val::Px;
-    ui.spawn(Node {
-        position_type: PositionType::Absolute,
-        left: px(28.0),
-        top: px(74.0),
-        width: px(206.0),
-        height: px(TOWER_H),
-        ..default()
-    })
+    // Hovered, so a drag that starts on the panel doesn't turn the hero.
+    ui.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(28.0),
+            top: px(74.0),
+            width: px(206.0),
+            height: px(TOWER_H),
+            ..default()
+        },
+        Interaction::default(),
+    ))
     .with_children(|tower| {
         if let Some(bg) = &art.tower_bg {
             tower.spawn((
@@ -749,6 +777,7 @@ fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>, pr
     let px = Val::Px;
     ui.spawn((
         ZoneFrame,
+        Interaction::default(),
         Node {
             position_type: PositionType::Absolute,
             right: px(5.0),
@@ -897,8 +926,16 @@ pub(super) fn menu_clicks(
     mut run: ResMut<Run>,
     mut rng: ResMut<Rng>,
     mut next: ResMut<NextState<Phase>>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     if *phase.get() != Phase::Menu {
+        return;
+    }
+    if actions
+        .iter()
+        .any(|(e, a)| *a == MenuAction::Quit && clicks.hit(e))
+    {
+        exit.write(AppExit::Success);
         return;
     }
     let Some(creatures) = creatures.as_deref() else {
@@ -993,6 +1030,7 @@ pub(super) fn menu_clicks(
                 }
             }
         }
+        MenuAction::Quit => {}
         MenuAction::Sex(s) => {
             if let Some(c) = selection.class {
                 if let Some(l) = find(&all[c], race, Some(s)) {
@@ -1054,7 +1092,9 @@ pub(super) fn refresh_menu_ui(
             MenuAction::Sex(s) => cur.is_some_and(|c| c.1 == s),
             MenuAction::Class(i) => selection.class == Some(i),
             MenuAction::Map(i) => selection.map == i,
-            MenuAction::Dial(..) | MenuAction::Randomize | MenuAction::Enter => false,
+            MenuAction::Dial(..) | MenuAction::Randomize | MenuAction::Enter | MenuAction::Quit => {
+                false
+            }
         };
         if let Some(mut lock) = lock {
             if lock.0 != selected {

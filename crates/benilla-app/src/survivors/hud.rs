@@ -18,7 +18,6 @@ use super::{Owned, Phase, Rng, Run, Selection, Stats};
 
 const GOLD: Color = Color::srgb(1.0, 0.82, 0.0);
 /// The mobility button's edge, an action button's 36 units.
-const MOBILITY_SIZE: f32 = 40.0;
 const EDGE: Color = Color::srgb(0.55, 0.45, 0.25);
 const BUTTON: Color = Color::srgba(0.18, 0.06, 0.04, 0.95);
 const BUTTON_HOT: Color = Color::srgba(0.36, 0.12, 0.06, 0.98);
@@ -63,9 +62,10 @@ pub(super) struct ShieldFill;
 #[derive(Component)]
 pub(super) struct BannerText;
 #[derive(Component)]
-pub(super) struct AbilityRow;
+pub(super) struct ActionBar;
+/// One of `MainMenuBar`'s twelve action slots: abilities in 0..6, passives in 6..12.
 #[derive(Component)]
-pub(super) struct PassiveRow;
+pub(super) struct BarSlot(usize);
 #[derive(Component)]
 pub(super) struct OfferRow;
 /// The line under LEVEL UP: which level this is.
@@ -272,6 +272,177 @@ fn icon(spell: u32, size: f32) -> impl Bundle {
     )
 }
 
+/// `ActionButtonTemplate`'s 36-unit button, with `UI-Quickslot2` (66×66 at CENTER (0,−1)) as
+/// its frame.
+const SLOT: f32 = 36.0;
+
+fn quickslot_frame() -> impl Bundle {
+    (
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px((SLOT - 66.0) / 2.0),
+            top: Val::Px((SLOT - 66.0) / 2.0 + 1.0),
+            width: Val::Px(66.0),
+            height: Val::Px(66.0),
+            ..default()
+        },
+        ImageNode {
+            color: Color::NONE,
+            ..default()
+        },
+        UiArt::crop("Interface\\Buttons\\UI-Quickslot2", [0.0, 1.0, 0.0, 1.0]),
+        bevy::ui::FocusPolicy::Pass,
+    )
+}
+
+/// `MainMenuBar`, 1024×53 at BOTTOM: `MainMenuBarTexture0`..`3` (256×43 each, at −384, −128, 128
+/// and 384 from the centre), the gryphon end caps (128×128 at ±544), the twelve action buttons
+/// from BOTTOMLEFT (8,4) six apart, and the mobility spell in the backpack's socket at
+/// BOTTOMRIGHT (−6,2).
+fn action_bar(
+    root: &mut ChildSpawnerCommands,
+    f: &Handle<Font>,
+    sweeps: &mut Assets<SweepUiMaterial>,
+) {
+    let art = |left: f32, w: f32, h: f32, path: &'static str, coords: [f32; 4]| {
+        (
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(left),
+                bottom: Val::Px(0.0),
+                width: Val::Px(w),
+                height: Val::Px(h),
+                ..default()
+            },
+            ImageNode {
+                color: Color::NONE,
+                ..default()
+            },
+            UiArt::crop(path, coords),
+        )
+    };
+    root.spawn((
+        ActionBar,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(50.0),
+            bottom: Val::Px(0.0),
+            margin: UiRect::left(Val::Px(-512.0)),
+            width: Val::Px(1024.0),
+            height: Val::Px(53.0),
+            ..default()
+        },
+    ))
+    .with_children(|bar| {
+        const BAR: &str = "Interface\\MainMenuBar\\UI-MainMenuBar-Dwarf";
+        for (i, top) in [0.832_031_25, 0.582_031_25, 0.332_031_25, 0.082_031_25]
+            .into_iter()
+            .enumerate()
+        {
+            bar.spawn(art(
+                256.0 * i as f32,
+                256.0,
+                43.0,
+                BAR,
+                [0.0, 1.0, top, top + 0.167_968_75],
+            ));
+        }
+        const CAP: &str = "Interface\\MainMenuBar\\UI-MainMenuBar-EndCap-Dwarf";
+        bar.spawn(art(
+            512.0 - 544.0 - 64.0,
+            128.0,
+            128.0,
+            CAP,
+            [0.0, 1.0, 0.0, 1.0],
+        ));
+        bar.spawn(art(
+            512.0 + 544.0 - 64.0,
+            128.0,
+            128.0,
+            CAP,
+            [1.0, 0.0, 0.0, 1.0],
+        ));
+        for i in 0..12 {
+            bar.spawn((
+                BarSlot(i),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(8.0 + i as f32 * (SLOT + 6.0)),
+                    bottom: Val::Px(4.0),
+                    width: Val::Px(SLOT),
+                    height: Val::Px(SLOT),
+                    ..default()
+                },
+            ));
+        }
+        bar.spawn((
+            MobilitySlot,
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(6.0),
+                bottom: Val::Px(2.0),
+                width: Val::Px(SLOT),
+                height: Val::Px(SLOT),
+                display: Display::None,
+                ..default()
+            },
+            Interaction::default(),
+            TipFor::Mobility,
+        ))
+        .with_children(|slot| {
+            slot.spawn((
+                MobilityIcon,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                ImageNode {
+                    color: Color::srgba(0.0, 0.0, 0.0, 0.6),
+                    ..default()
+                },
+            ));
+            let handle = sweeps.add(SweepUiMaterial { sweep: 0.0 });
+            slot.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                MaterialNode(handle.clone()),
+                MobilitySweep(handle),
+            ));
+            slot.spawn(quickslot_frame());
+            slot.spawn(hotkey(f, "F"));
+        });
+    });
+}
+
+/// `ActionButtonTemplate`'s `HotKey`, NumberFontNormalSmallGray at TOPLEFT (−2,−2), 36×10,
+/// justified right.
+fn hotkey(f: &Handle<Font>, key: &str) -> impl Bundle {
+    (
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(2.0),
+            top: Val::Px(2.0),
+            ..default()
+        },
+        Text::new(key),
+        TextFont {
+            font: f.clone(),
+            font_size: 12.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.6, 0.6, 0.6)),
+        TextShadow {
+            offset: Vec2::new(1.0, -1.0),
+            color: Color::BLACK,
+        },
+    )
+}
+
 fn spell_name(spells: Option<&crate::ui_action::Spells>, spell: u32, fallback: &str) -> String {
     spells
         .and_then(|s| s.catalog.get(spell))
@@ -307,15 +478,15 @@ pub(super) fn setup_hud(
             Visibility::Hidden,
         ))
         .with_children(|root| {
-            // `MainMenuExpBar`, 1024×13 at the bottom centre. The reference stacks it on the
-            // 40-unit action bar; with no action bar here it rests on the screen's edge.
+            action_bar(root, f, &mut sweeps_init);
+            // `MainMenuExpBar`, 1024×13 at the bottom centre, stacked on the 40-unit action bar.
             root.spawn((
                 XpBar,
                 Interaction::default(),
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Percent(50.0),
-                    bottom: Val::Px(0.0),
+                    bottom: Val::Px(40.0),
                     margin: UiRect::left(Val::Px(-512.0)),
                     width: Val::Px(1024.0),
                     height: Val::Px(13.0),
@@ -394,74 +565,6 @@ pub(super) fn setup_hud(
                 });
             });
             minimap::spawn_cluster(root, f, &map);
-            // The mobility button: a 36-unit action slot in `UI-Quickslot2`, its key over it.
-            root.spawn((
-                MobilitySlot,
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Percent(50.0),
-                    bottom: Val::Px(24.0),
-                    margin: UiRect::left(Val::Px(-MOBILITY_SIZE / 2.0)),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    row_gap: Val::Px(2.0),
-                    display: Display::None,
-                    ..default()
-                },
-            ))
-            .with_children(|col| {
-                col.spawn(centered(f, "F", 18.0, Color::WHITE));
-                col.spawn((
-                    Node {
-                        width: Val::Px(MOBILITY_SIZE),
-                        height: Val::Px(MOBILITY_SIZE),
-                        ..default()
-                    },
-                    Interaction::default(),
-                    TipFor::Mobility,
-                ))
-                .with_children(|slot| {
-                    // `UI-Quickslot2` is the empty slot's 64×64 frame, the button 36 inside it.
-                    slot.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: Val::Px(-MOBILITY_SIZE * 0.42),
-                            top: Val::Px(-MOBILITY_SIZE * 0.42),
-                            width: Val::Px(MOBILITY_SIZE * 1.84),
-                            height: Val::Px(MOBILITY_SIZE * 1.84),
-                            ..default()
-                        },
-                        ImageNode {
-                            color: Color::NONE,
-                            ..default()
-                        },
-                        UiArt::crop("Interface\\Buttons\\UI-Quickslot2", [0.0, 1.0, 0.0, 1.0]),
-                    ));
-                    slot.spawn((
-                        MobilityIcon,
-                        Node {
-                            width: Val::Percent(100.0),
-                            height: Val::Percent(100.0),
-                            ..default()
-                        },
-                        ImageNode {
-                            color: Color::srgba(0.0, 0.0, 0.0, 0.6),
-                            ..default()
-                        },
-                    ));
-                    let handle = sweeps_init.add(SweepUiMaterial { sweep: 0.0 });
-                    slot.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            width: Val::Percent(100.0),
-                            height: Val::Percent(100.0),
-                            ..default()
-                        },
-                        MaterialNode(handle.clone()),
-                        MobilitySweep(handle),
-                    ));
-                });
-            });
             root.spawn(Node {
                 width: Val::Percent(100.0),
                 padding: UiRect::all(Val::Px(10.0)),
@@ -470,27 +573,10 @@ pub(super) fn setup_hud(
                 ..default()
             })
             .with_children(|row| {
+                // The minimap cluster's width, so the clock stays centred.
                 row.spawn(Node {
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(6.0),
                     width: Val::Px(300.0),
                     ..default()
-                })
-                .with_children(|col| {
-                    col.spawn((
-                        AbilityRow,
-                        Node {
-                            column_gap: Val::Px(4.0),
-                            ..default()
-                        },
-                    ));
-                    col.spawn((
-                        PassiveRow,
-                        Node {
-                            column_gap: Val::Px(4.0),
-                            ..default()
-                        },
-                    ));
                 });
                 // The clock, with the level and the kill count on one line under it.
                 row.spawn(Node {
@@ -1268,7 +1354,7 @@ pub(super) fn refresh_hud(
         Query<&mut Text, With<XpText>>,
     )>,
     mut xp_fill: Query<&mut Node, With<XpFill>>,
-    rows: Query<(Entity, Has<AbilityRow>), Or<(With<AbilityRow>, With<PassiveRow>)>>,
+    slots: Query<(Entity, &BarSlot)>,
     mut sweeps: ResMut<Assets<SweepUiMaterial>>,
     mut last_version: Local<Option<u32>>,
 ) {
@@ -1339,71 +1425,65 @@ pub(super) fn refresh_hud(
         }
     }
 
-    // The ability and passive icons, rebuilt when the build changes.
+    // The action bar's icons, rebuilt when the build changes.
     if *last_version == Some(run.version) {
         return;
     }
     *last_version = Some(run.version);
     let f = &font.0;
-    for (row, is_abilities) in &rows {
-        commands.entity(row).despawn_related::<Children>();
-        commands.entity(row).with_children(|row| {
-            let entries: Vec<(u32, u8, f32, TipFor)> = if is_abilities {
-                run.abilities
-                    .iter()
-                    .enumerate()
-                    .map(|(i, o)| (o.def.spell, o.level, 40.0, TipFor::Ability(i)))
-                    .collect()
-            } else {
-                run.passives
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (p, l))| (p.spell, *l, 30.0, TipFor::Passive(i)))
-                    .collect()
-            };
-            for (spell, level, size, tip) in entries {
-                let ability = match &tip {
-                    TipFor::Ability(i) => Some(*i),
-                    _ => None,
-                };
-                row.spawn((
-                    Node {
-                        width: Val::Px(size),
-                        height: Val::Px(size),
-                        border: UiRect::all(Val::Px(1.0)),
-                        ..default()
-                    },
-                    BorderColor::all(EDGE),
-                    Interaction::default(),
-                    tip,
-                ))
-                .with_children(|slot| {
-                    slot.spawn(icon(spell, size - 2.0));
-                    // The cooldown sweep sits over the icon, under the level text.
-                    if let Some(i) = ability {
-                        let handle = sweeps.add(SweepUiMaterial { sweep: 0.0 });
-                        slot.spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                width: Val::Percent(100.0),
-                                height: Val::Percent(100.0),
-                                ..default()
-                            },
-                            MaterialNode(handle.clone()),
-                            AbilitySweep { handle, index: i },
-                        ));
-                    }
-                    slot.spawn(Node {
-                        position_type: PositionType::Absolute,
-                        right: Val::Px(2.0),
-                        bottom: Val::Px(0.0),
-                        ..default()
-                    })
-                    .with_children(|n| {
-                        n.spawn(text(f, level.to_string(), 12.0, Color::WHITE));
-                    });
+    for (slot, &BarSlot(i)) in &slots {
+        commands.entity(slot).despawn_related::<Children>();
+        let entry = if i < 6 {
+            run.abilities
+                .get(i)
+                .map(|o| (o.def.spell, o.level, TipFor::Ability(i)))
+        } else {
+            run.passives
+                .get(i - 6)
+                .map(|(p, l)| (p.spell, *l, TipFor::Passive(i - 6)))
+        };
+        // An empty slot shows the bar's own socket.
+        let Some((spell, level, tip)) = entry else {
+            continue;
+        };
+        commands.entity(slot).with_children(|slot| {
+            slot.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                Interaction::default(),
+                tip,
+            ))
+            .with_children(|b| {
+                b.spawn(icon(spell, SLOT));
+                // The cooldown sweep sits over the icon, under the frame and the rank.
+                if let TipFor::Ability(index) = tip {
+                    let handle = sweeps.add(SweepUiMaterial { sweep: 0.0 });
+                    b.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        MaterialNode(handle.clone()),
+                        AbilitySweep { handle, index },
+                    ));
+                }
+                b.spawn(quickslot_frame());
+                // `Count`, NumberFontNormal at BOTTOMRIGHT (−2,2): the rank.
+                b.spawn(Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(2.0),
+                    bottom: Val::Px(2.0),
+                    ..default()
+                })
+                .with_children(|n| {
+                    n.spawn(text(f, level.to_string(), 12.0, Color::WHITE));
                 });
-            }
+            });
         });
     }
 }
@@ -2109,7 +2189,7 @@ fn spawn_tooltip(
     (root.id(), body)
 }
 
-/// Hovering a build icon raises its `GameTooltip` under the icon, every number from the current
+/// Hovering a build icon raises its `GameTooltip` over the bar's right end, every number from the current
 /// rank and stats, and what the next rank brings.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn icon_tooltip(
@@ -2121,12 +2201,7 @@ pub(super) fn icon_tooltip(
     ui_scale: Res<UiScale>,
     mut assets: Option<ResMut<benilla_assets::WorldAssets>>,
     mut images: ResMut<Assets<Image>>,
-    slots: Query<(
-        &Interaction,
-        &TipFor,
-        &ComputedNode,
-        &bevy::ui::UiGlobalTransform,
-    )>,
+    slots: Query<(&Interaction, &TipFor)>,
     mut frames: Query<(&mut Node, &mut Visibility), With<GameTooltip>>,
     mut built: Local<Option<(Entity, Entity)>>,
     mut shown: Local<Option<(TipFor, u32)>>,
@@ -2149,22 +2224,19 @@ pub(super) fn icon_tooltip(
         .iter()
         .find(|(i, ..)| **i != Interaction::None)
         .filter(|_| *phase.get() != Phase::Menu);
-    let Some((_, &tip, computed, at)) = hovered else {
+    let Some((_, &tip)) = hovered else {
         if *vis != Visibility::Hidden {
             *vis = Visibility::Hidden;
         }
         *shown = None;
         return;
     };
-    // Physical pixels to the 768-unit canvas the `Val`s are on.
-    let inv = computed.inverse_scale_factor;
-    let (left, top) = (
-        Val::Px((at.translation.x - computed.size().x / 2.0) * inv),
-        Val::Px((at.translation.y + computed.size().y / 2.0) * inv + 4.0),
-    );
-    if node.left != left || node.top != top {
-        node.left = left;
-        node.top = top;
+    // An action button's tooltip takes `GameTooltip_SetDefaultAnchor`'s place: BOTTOMRIGHT of
+    // the screen, (−CONTAINER_OFFSET_X − 13, CONTAINER_OFFSET_Y), over the bar.
+    let (right, bottom) = (Val::Px(13.0), Val::Px(70.0));
+    if node.right != right || node.bottom != bottom {
+        node.right = right;
+        node.bottom = bottom;
     }
     if *shown == Some((tip, run.version)) {
         if *vis != Visibility::Inherited {
