@@ -19,7 +19,7 @@ read -rp "Apple ID used for notarization: " apple_id
 read -rp "Team ID: " team_id
 read -rsp "App-specific password for $apple_id (appleid.apple.com → Sign-In and Security): " notary_pass; echo
 
-echo "setting secrets on $REPO…"
+echo "setting secrets on ${REPO}…"
 base64 -i "$P12" | gh secret set MACOS_CERT_P12 -R "$REPO"
 printf '%s' "$cert_pass" | gh secret set MACOS_CERT_PASSWORD -R "$REPO"
 printf '%s' "$apple_id" | gh secret set NOTARY_APPLE_ID -R "$REPO"
