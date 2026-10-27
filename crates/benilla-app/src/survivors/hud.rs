@@ -1653,10 +1653,14 @@ pub(super) fn refresh_results(
     )>,
 ) {
     let secs = run.elapsed as u32;
-    let stats_line = if run.won {
-        selection.map_def().victory
-    } else {
-        "The horde was too much this time."
+    let stats_line = match (run.won, run.opened) {
+        (true, Some(z)) => format!(
+            "{}  A new zone is open: {}.",
+            selection.map_def().victory,
+            data::MAPS[z].name
+        ),
+        (true, None) => selection.map_def().victory.to_string(),
+        (false, _) => "The horde was too much this time.".to_string(),
     };
     let values = [
         format!("{:02}:{:02}", secs / 60, secs % 60),
@@ -1674,7 +1678,7 @@ pub(super) fn refresh_results(
     }
     if let Ok(mut t) = over_texts.p1().single_mut() {
         if **t != stats_line {
-            **t = stats_line.to_string();
+            **t = stats_line;
         }
     }
 }

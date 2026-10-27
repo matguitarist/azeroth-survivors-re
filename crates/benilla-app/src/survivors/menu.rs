@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use bevy::ui_render::ui_material::MaterialNode;
 
 use super::hud::{looks_for, rgb, start_run, HudFont, MenuRoot};
+use super::profile::{zone_order, Profile};
 use super::{data, Phase, Rng, Run, Selection};
 use crate::char_select::race_name;
 use crate::glue::art::{class_tc, race_tc, tc_rect, GlueArt, DIM, GOLD, NAME_EDGE};
@@ -58,6 +59,15 @@ pub(super) struct RaceFace(u8);
 #[derive(Component)]
 pub(super) struct PickName;
 
+/// The zone list, rebuilt when the profile changes what is open.
+#[derive(Component)]
+pub(super) struct ZoneFrame;
+
+/// The colour a locked zone's row is written in.
+const LOCKED: Color = Color::srgb(0.5, 0.5, 0.5);
+/// "Won", beside a zone already won.
+const WON: Color = Color::srgb(0.25, 0.85, 0.25);
+
 /// The saved pick, `benilla-config/survivors-pick.txt` (`localStorage` on the page):
 /// `class race sex map`, restored at the menu so a reload keeps the last hero and zone.
 fn pick_path() -> Option<std::path::PathBuf> {
@@ -76,9 +86,11 @@ fn save_pick(sel: &Selection) {
 }
 
 /// Restore the saved pick once the creature data can resolve its looks; a stale or missing file
-/// leaves the default.
+/// leaves the default. A zone that isn't open (the default, an older pick) gives way to the first
+/// starting zone.
 pub(super) fn restore_pick(
     creatures: Option<Res<crate::entities::Creatures>>,
+    profile: Res<Profile>,
     mut selection: ResMut<Selection>,
     mut done: Local<bool>,
 ) {
@@ -89,6 +101,17 @@ pub(super) fn restore_pick(
         return;
     };
     *done = true;
+    restore_saved(creatures, &mut selection);
+    if !profile.is_open(selection.map) {
+        if let Some(z) = zone_order().first() {
+            selection.map = z.map;
+            selection.stage = z.map;
+            selection.version += 1;
+        }
+    }
+}
+
+fn restore_saved(creatures: &crate::entities::Creatures, selection: &mut Selection) {
     let Some(text) = pick_path().and_then(|p| crate::local_state::read_to_string(&p).ok()) else {
         return;
     };
@@ -107,7 +130,7 @@ pub(super) fn restore_pick(
     if class < data::CLASSES.len() {
         let all = all_looks(creatures);
         if let Some(l) = find(&all[class], Some(race as u8), Some(sex as u8)) {
-            set(&mut selection, &all, class, l);
+            set(selection, &all, class, l);
         }
     }
 }
@@ -142,6 +165,7 @@ pub(super) fn build_menu(
     mut images: ResMut<Assets<Image>>,
     mut add_mats: ResMut<Assets<crate::glue::add_material::AddUiMaterial>>,
     font: Res<HudFont>,
+    profile: Res<Profile>,
 ) {
     let Ok(root) = roots.single() else { return };
     let Some(mut assets) = assets else { return };
@@ -157,7 +181,7 @@ pub(super) fn build_menu(
                 abs(1.0, 3.0, 7.0, 256.0, 128.0),
             ));
         }
-        zone_frame(ui, &art, f);
+        zone_frame(ui, &art, f, &profile);
 
         // `CharSelectCharacterName`, GlueFontNormalHuge at BOTTOM (0,100).
         ui.spawn(Node {
@@ -398,26 +422,43 @@ fn tower(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
 
 /// The zone list in `CharacterSelectCharacterFrame` (260×642 at TOPRIGHT (-5,-15)), one
 /// character-row per zone, lowest level first.
-fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
-    let px = Val::Px;
-    let mut order: Vec<(usize, u32, u32)> = (0..data::MAPS.len())
-        .map(|i| {
-            let levels = data::roster(i).enemies.iter().map(|e| e.level);
-            let lo = levels.clone().min().unwrap_or(1);
-            let hi = levels.max().unwrap_or(lo);
-            (i, lo, hi)
-        })
-        .collect();
-    order.sort_by_key(|&(i, lo, _)| (lo, data::MAPS[i].name));
+/// After a run that changed the profile, the zone list is built again, so a zone just opened
+/// shows open.
+pub(super) fn rebuild_zones(
+    mut commands: Commands,
+    roots: Query<Entity, With<MenuBuilt>>,
+    frames: Query<Entity, With<ZoneFrame>>,
+    art: Res<GlueArt>,
+    font: Res<HudFont>,
+    profile: Res<Profile>,
+    mut seen: Local<Option<u32>>,
+) {
+    let Ok(root) = roots.single() else { return };
+    let built = seen.replace(profile.version);
+    if built.is_none_or(|v| v == profile.version) {
+        return;
+    }
+    for e in &frames {
+        commands.entity(e).despawn();
+    }
+    commands
+        .entity(root)
+        .with_children(|ui| zone_frame(ui, &art, &font.0, &profile));
+}
 
-    ui.spawn(Node {
-        position_type: PositionType::Absolute,
-        right: px(5.0),
-        top: px(15.0),
-        width: px(260.0),
-        height: px(642.0),
-        ..default()
-    })
+fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>, profile: &Profile) {
+    let px = Val::Px;
+    ui.spawn((
+        ZoneFrame,
+        Node {
+            position_type: PositionType::Absolute,
+            right: px(5.0),
+            top: px(15.0),
+            width: px(260.0),
+            height: px(642.0),
+            ..default()
+        },
+    ))
     .with_children(|frame| {
         if let (Some(bg), Some(border)) = (&art.tooltip_bg, &art.name_border) {
             frame.spawn((
@@ -455,65 +496,91 @@ fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
             f,
             1.0,
         );
-        for (row, &(i, lo, hi)) in order.iter().enumerate() {
+        for (row, z) in zone_order().iter().enumerate() {
+            let (i, lo, hi) = (z.map, z.lo, z.hi);
             let map = &data::MAPS[i];
-            frame
-                .spawn((
-                    MenuAction::Map(i),
-                    Button,
-                    LockHighlight::default(),
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: px(24.0),
-                        top: px(ROW_TOP + row as f32 * ROW_PITCH),
-                        width: px(ROW_W),
-                        height: px(ROW_H),
-                        ..default()
+            let lock = profile.lock(i);
+            let node = Node {
+                position_type: PositionType::Absolute,
+                left: px(24.0),
+                top: px(ROW_TOP + row as f32 * ROW_PITCH),
+                width: px(ROW_W),
+                height: px(ROW_H),
+                ..default()
+            };
+            // A locked row is only text: no button, so no click and no highlight.
+            let mut row = match lock {
+                None => frame.spawn((MenuAction::Map(i), Button, LockHighlight::default(), node)),
+                Some(_) => frame.spawn(node),
+            };
+            row.with_children(|b| {
+                if let (None, Some(hi)) = (lock, &art.select_highlight) {
+                    b.spawn((
+                        Hilight,
+                        Visibility::Hidden,
+                        MaterialNode(hi.clone()),
+                        abs(1.0, -20.0, -6.0, ROW_W + 20.0, ROW_H + 12.0),
+                    ));
+                }
+                outlined_text(
+                    b,
+                    abs(1.0, 0.0, 2.0, ROW_W, 16.0),
+                    (),
+                    (),
+                    GlueText {
+                        text: map.name,
+                        size: 15.0,
+                        color: if lock.is_some() { LOCKED } else { GOLD },
+                        wrap: false,
                     },
-                ))
-                .with_children(|b| {
-                    if let Some(hi) = &art.select_highlight {
-                        b.spawn((
-                            Hilight,
-                            Visibility::Hidden,
-                            MaterialNode(hi.clone()),
-                            abs(1.0, -20.0, -6.0, ROW_W + 20.0, ROW_H + 12.0),
-                        ));
-                    }
-                    outlined_text(
-                        b,
-                        abs(1.0, 0.0, 2.0, ROW_W, 16.0),
-                        (),
-                        (),
-                        GlueText {
-                            text: map.name,
-                            size: 15.0,
-                            color: GOLD,
-                            wrap: false,
-                        },
-                        f,
-                        1.0,
-                    );
-                    let levels = if lo == hi {
-                        format!("Level {lo}")
-                    } else {
-                        format!("Level {lo}-{hi}")
-                    };
-                    outlined_text(
-                        b,
-                        abs(1.0, 0.0, 19.0, ROW_W, 14.0),
-                        (),
-                        (),
-                        GlueText {
-                            text: &format!("{levels}  {}", map.zone),
-                            size: 12.0,
-                            color: Color::WHITE,
-                            wrap: false,
-                        },
-                        f,
-                        1.0,
-                    );
-                });
+                    f,
+                    1.0,
+                );
+                if profile.won(i) {
+                    b.spawn(Node {
+                        position_type: PositionType::Absolute,
+                        right: px(4.0),
+                        top: px(2.0),
+                        ..default()
+                    })
+                    .with_children(|t| {
+                        outlined_text(
+                            t,
+                            Node::default(),
+                            (),
+                            (),
+                            GlueText {
+                                text: "Won",
+                                size: 12.0,
+                                color: WON,
+                                wrap: false,
+                            },
+                            f,
+                            1.0,
+                        );
+                    });
+                }
+                let line = match lock {
+                    None if lo == hi => format!("Level {lo}  {}", map.zone),
+                    None => format!("Level {lo}-{hi}  {}", map.zone),
+                    Some(Some(prev)) => format!("Locked: win {}", data::MAPS[prev].name),
+                    Some(None) => "Locked: win a starting zone".to_string(),
+                };
+                outlined_text(
+                    b,
+                    abs(1.0, 0.0, 19.0, ROW_W, 14.0),
+                    (),
+                    (),
+                    GlueText {
+                        text: &line,
+                        size: 12.0,
+                        color: if lock.is_some() { LOCKED } else { Color::WHITE },
+                        wrap: false,
+                    },
+                    f,
+                    1.0,
+                );
+            });
         }
     });
 }
@@ -524,6 +591,7 @@ pub(super) fn menu_clicks(
     actions: Query<(Entity, &MenuAction)>,
     phase: Res<State<Phase>>,
     creatures: Option<Res<crate::entities::Creatures>>,
+    profile: Res<Profile>,
     mut selection: ResMut<Selection>,
     mut run: ResMut<Run>,
     mut rng: ResMut<Rng>,
@@ -550,13 +618,13 @@ pub(super) fn menu_clicks(
     let (race, sex) = (cur.map(|c| c.0), cur.map_or(0, |c| c.1));
     match action {
         MenuAction::Map(i) => {
-            if selection.map != i {
+            if selection.map != i && profile.is_open(i) {
                 selection.map = i;
                 selection.version += 1;
             }
         }
         MenuAction::Enter => {
-            if start_run(&mut run, &mut selection) {
+            if profile.is_open(selection.map) && start_run(&mut run, &mut selection) {
                 next.set(Phase::Playing);
             }
         }

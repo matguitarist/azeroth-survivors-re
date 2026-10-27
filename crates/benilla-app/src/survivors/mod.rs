@@ -16,6 +16,7 @@ mod hud;
 mod menu;
 mod minimap;
 mod mobility;
+mod profile;
 mod units;
 
 use benilla_world::schedule::WorldStage;
@@ -44,6 +45,7 @@ impl Plugin for SurvivorsPlugin {
             .init_resource::<Rng>()
             .init_resource::<Selection>()
             .init_resource::<Run>()
+            .init_resource::<profile::Profile>()
             .init_resource::<hero::CamRig>()
             .init_resource::<hero::AimPoint>()
             .init_resource::<abilities::PendingHits>()
@@ -101,6 +103,7 @@ impl Plugin for SurvivorsPlugin {
                     hud::refresh_menu,
                     menu::restore_pick,
                     menu::build_menu,
+                    menu::rebuild_zones,
                     menu::menu_clicks,
                     menu::refresh_menu_ui.before(crate::glue::GlueVisuals),
                     cards::deal_cards,
@@ -134,7 +137,7 @@ impl Plugin for SurvivorsPlugin {
             .add_systems(OnEnter(Phase::Playing), unpause)
             .add_systems(OnEnter(Phase::LevelUp), (pause, hud::roll_offer))
             .add_systems(OnEnter(Phase::Paused), pause)
-            .add_systems(OnEnter(Phase::GameOver), unpause)
+            .add_systems(OnEnter(Phase::GameOver), (unpause, profile::record_run))
             .add_systems(OnEnter(Phase::Menu), (unpause, reset_run));
         if let Some(auto) = auto::from_env() {
             app.insert_resource(auto)
@@ -265,6 +268,8 @@ pub(super) struct Run {
     pub bosses: u32,
     pub rings: u32,
     pub won: bool,
+    /// The zone this run's win opened, for the results.
+    pub opened: Option<usize>,
     /// Seconds since the hero fell, while the death plays out.
     pub dead_t: Option<f32>,
     pub next_guid: u64,
@@ -300,6 +305,7 @@ impl Default for Run {
             bosses: 0,
             rings: 0,
             won: false,
+            opened: None,
             dead_t: None,
             next_guid: 1,
             damage_done: 0.0,
