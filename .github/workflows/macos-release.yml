@@ -78,6 +78,7 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
           SPARKLE_KEY_FILE: ${{ runner.temp }}/sparkle.key
+          GH_TOKEN: ${{ github.token }} # renders the release notes' Markdown
         run: VERSION="${TAG#v}" scripts/macos-app.sh --release
 
       - name: Keep the build (dry run)
@@ -92,7 +93,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Azeroth Survivors ${TAG#v}" --generate-notes
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            if [ -f target/macos/release-notes.md ]; then notes=(--notes-file target/macos/release-notes.md); else notes=(--generate-notes); fi
+            gh release create "$TAG" --title "Azeroth Survivors ${TAG#v}" "${notes[@]}"
+          fi
           gh release upload "$TAG" target/macos/dist/* --clobber
 
       - name: Clean up keys

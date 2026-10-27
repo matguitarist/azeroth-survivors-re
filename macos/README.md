@@ -79,7 +79,9 @@ signs ad-hoc: the app runs on the Mac that built it, with updates off.
 
 ## Shipping a version
 
-1. Bump `version` in the workspace `Cargo.toml` and merge.
+1. Bump `version` in the workspace `Cargo.toml`, write `macos/release-notes/<version>.md` (what's
+   new, in Markdown) and merge. The notes appear in Sparkle's update dialog (rendered to HTML
+   into `appcast.xml`) and as the GitHub release text. Without the file the dialog shows none.
 2. Tag and push: `git tag v0.2.1 && git push origin v0.2.1`. A tag with a suffix
    (`v0.2.1-ci1`) is a dry run: everything but publishing, the files kept as a workflow artifact.
 3. The workflow builds a universal app, notarizes it, and publishes a release with the dmg,

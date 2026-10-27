@@ -208,6 +208,24 @@ if [ -n "${SPARKLE_KEY_FILE:-}" ]; then
 else
     sig="$("$SPARKLE/bin/sign_update" --account azeroth-survivors "$ZIP")"
 fi
+# What's new, shown in Sparkle's update dialog: macos/release-notes/<version>.md (a dry-run tag's
+# suffix dropped), rendered by GitHub's own Markdown renderer. The workflow also uses it as the
+# GitHub release text.
+NOTES_MD="$ROOT/macos/release-notes/${VERSION%%-*}.md"
+description=""
+if [ -f "$NOTES_MD" ]; then
+    cp "$NOTES_MD" "$OUT/release-notes.md"
+    html="$(gh api markdown -f mode=gfm -f text="$(cat "$NOTES_MD")" 2>/dev/null)" \
+        || html="<pre>$(sed 's/&/\&amp;/g; s/</\&lt;/g' "$NOTES_MD")</pre>"
+    description="<description><![CDATA[<style>
+        :root { color-scheme: light dark; }
+        body { font: -apple-system-body; font-family: -apple-system, sans-serif; margin: 0 4px; }
+        ul { padding-left: 1.3em; } li { margin: 0.25em 0; }
+      </style>${html//]]>/]]]]><![CDATA[>}]]></description>"
+else
+    echo "warning: no $NOTES_MD, so the update dialog will show no release notes"
+    rm -f "$OUT/release-notes.md"
+fi
 cat > "$DIST/appcast.xml" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
@@ -221,6 +239,7 @@ cat > "$DIST/appcast.xml" <<EOF
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>$MIN_MACOS</sparkle:minimumSystemVersion>
       <sparkle:fullReleaseNotesLink>https://github.com/$REPO/releases/tag/v$VERSION</sparkle:fullReleaseNotesLink>
+      $description
       <enclosure url="https://github.com/$REPO/releases/download/v$VERSION/$(basename "$ZIP")" type="application/octet-stream" $sig />
     </item>
   </channel>
