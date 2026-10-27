@@ -21,9 +21,41 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  # The game per arch, each on its own runner: one fat-LTO build takes ~90 minutes on a hosted
+  # Mac (the link alone ~50), so building both in one job ran past any sane timeout.
+  game:
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 180
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build the game (ship profile, player build)
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --profile ship -p warcraft-survivors --no-default-features --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: game-${{ matrix.target }}
+          path: target/${{ matrix.target }}/ship/warcraft-survivors
+          retention-days: 3
+
+  release:
+    needs: game
+    runs-on: macos-15
+    timeout-minutes: 60
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       # A tag with a suffix (v0.2.1-ci1) is a dry run: built and notarized, kept as an artifact.
@@ -61,16 +93,22 @@ jobs:
             echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ hashFiles('Cargo.lock') }}
+          pattern: game-*
 
-      - name: Build, notarize and package (universal)
+      - name: Put the games where the script expects them
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            mkdir -p "target/$t/ship"
+            mv "game-$t/warcraft-survivors" "target/$t/ship/"
+            chmod +x "target/$t/ship/warcraft-survivors"
+          done
+
+      - name: Notarize and package (universal)
         env:
           ARCHS: arm64 x86_64
+          PREBUILT_GAME: 1
           # Notarization: an Apple ID with an app-specific password, or an API key (NOTARY_KEY_*).
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}

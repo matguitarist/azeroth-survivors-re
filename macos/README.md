@@ -84,7 +84,8 @@ signs ad-hoc: the app runs on the Mac that built it, with updates off.
    into `appcast.xml`) and as the GitHub release text. Without the file the dialog shows none.
 2. Tag and push: `git tag v0.2.1 && git push origin v0.2.1`. A tag with a suffix
    (`v0.2.1-ci1`) is a dry run: everything but publishing, the files kept as a workflow artifact.
-3. The workflow builds a universal app, notarizes it, and publishes a release with the dmg,
+3. The workflow builds the game for each arch on its own runner (about 90 minutes each, in
+   parallel: a fat-LTO link on a hosted Mac is slow), then a universal app, notarizes it, and publishes a release with the dmg,
    the zip and `appcast.xml`. Installed apps see the update on their next check.
 
 A release can also be made locally with `make release-mac` and uploaded with

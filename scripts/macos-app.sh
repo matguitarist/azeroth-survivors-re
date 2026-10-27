@@ -16,6 +16,8 @@
 #   NOTARY_APPLE_ID, NOTARY_PASSWORD, NOTARY_TEAM_ID   an Apple ID and app-specific password, or
 #   NOTARY_KEY, NOTARY_KEY_ID, NOTARY_ISSUER           an App Store Connect API key (.p8 path)
 #   SPARKLE_KEY_FILE  Sparkle private key file (CI); default the keychain's `azeroth-survivors` key
+#   PREBUILT_GAME   1: use target/<triple>/ship/warcraft-survivors as it is (CI builds each arch
+#                   on its own runner, in parallel)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,9 +76,13 @@ fi
 games=()
 for arch in $ARCHS; do
     t="$(triple "$arch")"
-    rustup target add "$t" >/dev/null 2>&1 || true
-    echo "building the game for $arch (fat LTO: expect ~15 minutes from cold)…"
-    cargo build --profile ship -p warcraft-survivors --no-default-features --target "$t"
+    if [ "${PREBUILT_GAME:-0}" = 1 ]; then
+        [ -x "target/$t/ship/warcraft-survivors" ] || { echo "PREBUILT_GAME: no target/$t/ship/warcraft-survivors"; exit 1; }
+    else
+        rustup target add "$t" >/dev/null 2>&1 || true
+        echo "building the game for $arch (fat LTO: expect ~15 minutes from cold)…"
+        cargo build --profile ship -p warcraft-survivors --no-default-features --target "$t"
+    fi
     games+=("target/$t/ship/warcraft-survivors")
 done
 
