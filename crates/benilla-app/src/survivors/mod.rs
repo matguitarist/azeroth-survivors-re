@@ -50,7 +50,12 @@ impl Plugin for SurvivorsPlugin {
             .init_resource::<profile::Profile>()
             .init_resource::<gear::GearCatalog>()
             .add_systems(Update, gear::build_catalog.before(hud::menu_preview))
-            .add_systems(Update, panels::build_panels)
+            .init_resource::<panels::SettingsOpen>()
+            .add_systems(
+                Update,
+                (panels::build_panels, panels::settings.before(crate::glue::GlueVisuals)),
+            )
+            .add_systems(Update, hud::refresh_bar_info.after(hud::refresh_hud))
             .init_resource::<menu::MenuStep>()
             .add_systems(
                 Update,
@@ -288,7 +293,7 @@ pub(super) struct Run {
     pub opened: Option<usize>,
     /// Bosses killed, and the armor they dropped this run.
     pub boss_kills: u32,
-    pub loot: Vec<String>,
+    pub loot: Vec<gear::Piece>,
     /// What the armor worn adds, [`gear::bonus`].
     pub gear_might: f32,
     pub gear_hp: f32,

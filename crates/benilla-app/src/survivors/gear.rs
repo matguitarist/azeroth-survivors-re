@@ -710,7 +710,7 @@ pub(crate) fn boss_drops(
         let Some(piece) = piece else { continue };
         profile.grant(class, piece.set, piece.slot);
         run.banner = Some((format!("Loot: {}!", piece.name), 4.0));
-        run.loot.push(piece.name.clone());
+        run.loot.push(piece.clone());
         (run.gear_might, run.gear_hp) = bonus(class, &profile, &catalog);
         if let Ok(mut store) = hero.single_mut() {
             let sex = store.0.unit_gender().unwrap_or(0);

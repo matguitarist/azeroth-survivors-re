@@ -68,6 +68,21 @@ pub(super) struct CamRig {
     pub mode: CamMode,
 }
 
+impl CamRig {
+    /// Lock or unlock the camera, as `C` does; locking snaps back to the top-down view, so
+    /// world-relative WASD lines up with the screen again.
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            CamMode::Fixed => CamMode::Orbit,
+            CamMode::Orbit => {
+                self.yaw = 0.0;
+                self.pitch = FIXED_PITCH;
+                CamMode::Fixed
+            }
+        };
+    }
+}
+
 impl Default for CamRig {
     fn default() -> Self {
         Self {
@@ -358,17 +373,9 @@ pub(super) fn place_camera(
     ui: Query<&Interaction>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
-    // `C` unlocks the camera to swing and tilt; locking it again snaps back to the top-down view,
-    // so world-relative WASD lines up with the screen again.
+    // `C` unlocks the camera to swing and tilt (the pause menu's Settings too).
     if keys.just_pressed(KeyCode::KeyC) {
-        rig.mode = match rig.mode {
-            CamMode::Fixed => CamMode::Orbit,
-            CamMode::Orbit => {
-                rig.yaw = 0.0;
-                rig.pitch = FIXED_PITCH;
-                CamMode::Fixed
-            }
-        };
+        rig.toggle_mode();
     }
     // With no hero yet, the focus `drive_hero` grounded.
     let mut hero = hero.single_mut().ok();

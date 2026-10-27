@@ -328,9 +328,9 @@ pub(super) fn build_menu(
     });
 }
 
-/// A bottom-corner button: `CharacterCreateBackButton`'s place on the left, the forward one
-/// (`CharacterCreateOkayButton`'s) on the right, both at BOTTOM (∓24, 30). Quit is native only: a
-/// page has no quit.
+/// A bottom-corner button, all four the same 200×60: `CharacterCreateBackButton`'s place on the
+/// left, the forward one (`CharacterCreateOkayButton`'s) on the right, both at BOTTOM (∓24, 30).
+/// Quit is native only: a page has no quit.
 fn corner_button(
     p: &mut ChildSpawnerCommands,
     art: &GlueArt,
@@ -352,13 +352,18 @@ fn corner_button(
     } else {
         node.left = Val::Px(24.0);
     }
-    let (w, h, kind) = if forward {
-        (200.0, 60.0, GlueBtnKind::Normal)
-    } else {
-        (150.0, 38.0, GlueBtnKind::Small)
-    };
     p.spawn(node).with_children(|c| {
-        glue_button(c, art, f, action, caption, w, h, kind, 1.0);
+        glue_button(
+            c,
+            art,
+            f,
+            action,
+            caption,
+            200.0,
+            60.0,
+            GlueBtnKind::Normal,
+            1.0,
+        );
     });
 }
 

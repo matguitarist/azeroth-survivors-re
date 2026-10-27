@@ -63,6 +63,12 @@ pub(super) struct ActionBar;
 /// One of `MainMenuBar`'s twelve action slots: abilities in 0..6, passives in 6..12.
 #[derive(Component)]
 pub(super) struct BarSlot(usize);
+/// A line in the micro-menu buttons' recess: 0 the next boss, 1 the pace.
+#[derive(Component)]
+pub(super) struct BarInfo(u8);
+/// A bag socket, holding the run's `n`th armor drop.
+#[derive(Component)]
+pub(super) struct LootSlot(usize);
 #[derive(Component)]
 pub(super) struct OfferRow;
 /// The line under LEVEL UP: which level this is.
@@ -148,6 +154,8 @@ pub(super) enum TipFor {
     Ability(usize),
     Passive(usize),
     Mobility,
+    /// The run's `n`th armor drop.
+    Loot(usize),
 }
 
 /// The one `GameTooltip`, and the column its lines go in.
@@ -161,6 +169,9 @@ pub(super) enum UiAction {
     Resume,
     MainMenu,
     Quit,
+    Settings,
+    /// Settings back to the pause menu.
+    Done,
 }
 
 #[derive(Clone, Copy)]
@@ -277,7 +288,8 @@ fn quickslot_frame() -> impl Bundle {
 /// `MainMenuBar`, 1024×53 at BOTTOM: `MainMenuBarTexture0`..`3` (256×43 each, at −384, −128, 128
 /// and 384 from the centre), the gryphon end caps (128×128 at ±544), the twelve action buttons
 /// from BOTTOMLEFT (8,4) six apart, and the mobility spell in the backpack's socket at
-/// BOTTOMRIGHT (−6,2).
+/// BOTTOMRIGHT (−6,2). With no micro menu or bags, their recess carries the run's pace and the
+/// four bag sockets (each 5 left of the next, 37 wide) the armor it has dropped.
 fn action_bar(
     root: &mut ChildSpawnerCommands,
     f: &Handle<Font>,
@@ -348,6 +360,34 @@ fn action_bar(
                     position_type: PositionType::Absolute,
                     left: Val::Px(8.0 + i as f32 * (SLOT + 6.0)),
                     bottom: Val::Px(4.0),
+                    width: Val::Px(SLOT),
+                    height: Val::Px(SLOT),
+                    ..default()
+                },
+            ));
+        }
+        bar.spawn(Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(552.0),
+            bottom: Val::Px(4.0),
+            width: Val::Px(211.0),
+            height: Val::Px(34.0),
+            flex_direction: FlexDirection::Column,
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(|strip| {
+            strip.spawn((BarInfo(0), centered(f, "", 12.0, GOLD)));
+            strip.spawn((BarInfo(1), centered(f, "", 11.0, Color::WHITE)));
+        });
+        for k in 0..4 {
+            bar.spawn((
+                LootSlot(k),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(939.5 - 42.0 * k as f32),
+                    bottom: Val::Px(2.5),
                     width: Val::Px(SLOT),
                     height: Val::Px(SLOT),
                     ..default()
@@ -1030,6 +1070,7 @@ pub(super) fn keys(
     mut selection: ResMut<Selection>,
     mut run: ResMut<Run>,
     mut next: ResMut<NextState<Phase>>,
+    mut settings: ResMut<super::panels::SettingsOpen>,
 ) {
     match phase.get() {
         Phase::Menu => {
@@ -1042,9 +1083,14 @@ pub(super) fn keys(
                 next.set(Phase::Paused);
             }
         }
+        // Escape closes Settings first, then the pause menu.
         Phase::Paused => {
             if keys.just_pressed(KeyCode::Escape) {
-                next.set(Phase::Playing);
+                if settings.0 {
+                    settings.0 = false;
+                } else {
+                    next.set(Phase::Playing);
+                }
             }
         }
         Phase::LevelUp => {}
@@ -1637,7 +1683,8 @@ pub(super) fn refresh_results(
     let stats_line = if run.loot.is_empty() {
         stats_line
     } else {
-        format!("{stats_line}  Loot: {}.", run.loot.join(", "))
+        let names: Vec<&str> = run.loot.iter().map(|p| p.name.as_str()).collect();
+        format!("{stats_line}  Loot: {}.", names.join(", "))
     };
     let values = [
         format!("{:02}:{:02}", secs / 60, secs % 60),
@@ -2113,6 +2160,14 @@ pub(super) fn icon_tooltip(
                 TipLine::new(m.desc, GOLD),
             ]
         }),
+        TipFor::Loot(i) => run.loot.get(i).map(|p| {
+            vec![
+                TipLine::new(p.name.clone(), Color::srgb(0.64, 0.21, 0.93)).header(),
+                TipLine::new(p.slot.name(), Color::WHITE)
+                    .right(super::gear::sets(run.class.id)[p.set].name, Color::WHITE),
+                TipLine::new("Dropped this run. Yours for good: worn on every run.", GOLD),
+            ]
+        }),
     };
     let Some(lines) = lines else { return };
     *shown = Some((tip, run.version));
@@ -2196,5 +2251,92 @@ pub(super) fn show_panels(
     }
     for root in &mut roots.p4() {
         set(root, p == Phase::GameOver);
+    }
+}
+
+/// The bar's recess: the next boss and when, the damage per second and the time to victory; and
+/// the bag sockets: the armor this run has dropped, its item icons in `UI-Quickslot2`.
+#[allow(clippy::type_complexity)]
+pub(super) fn refresh_bar_info(
+    mut commands: Commands,
+    run: Res<Run>,
+    selection: Res<Selection>,
+    mut lines: Query<(&BarInfo, &mut Text)>,
+    slots: Query<(Entity, &LootSlot)>,
+    mut assets: Option<ResMut<benilla_assets::WorldAssets>>,
+    mut images: ResMut<Assets<Image>>,
+    mut shown: Local<Option<usize>>,
+) {
+    let bosses = &data::roster(selection.map).bosses;
+    let n = ((run.elapsed / data::BOSS_EVERY_SECS) as usize).min(bosses.len());
+    let clock = |secs: f32| {
+        let s = secs.max(0.0) as u32;
+        format!("{}:{:02}", s / 60, s % 60)
+    };
+    let boss = match bosses.get(n) {
+        Some(b) => format!(
+            "{} in {}",
+            b.name,
+            clock((n + 1) as f32 * data::BOSS_EVERY_SECS - run.elapsed)
+        ),
+        None if run.boss_kills as usize >= bosses.len() => "Every boss is down".to_string(),
+        None => "The last boss is here".to_string(),
+    };
+    let dps = if run.elapsed > 1.0 {
+        run.damage_done / f64::from(run.elapsed)
+    } else {
+        0.0
+    };
+    let pace = format!(
+        "{} DPS   Victory in {}",
+        compact(dps),
+        clock(data::VICTORY_SECS - run.elapsed)
+    );
+    for (line, mut t) in &mut lines {
+        let want = if line.0 == 0 { &boss } else { &pace };
+        if t.0 != *want {
+            t.0 = want.clone();
+        }
+    }
+    if *shown == Some(run.loot.len()) {
+        return;
+    }
+    let Some(assets) = assets.as_deref_mut() else {
+        return;
+    };
+    *shown = Some(run.loot.len());
+    for (slot, &LootSlot(k)) in &slots {
+        commands.entity(slot).despawn_related::<Children>();
+        let Some(piece) = run.loot.get(k) else {
+            continue;
+        };
+        let icon = piece
+            .icon
+            .as_deref()
+            .and_then(|i| assets.sprite_texture(&format!("{i}.blp"), &mut images));
+        commands.entity(slot).with_children(|slot| {
+            slot.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                Interaction::default(),
+                TipFor::Loot(k),
+            ))
+            .with_children(|b| {
+                if let Some(icon) = icon {
+                    b.spawn((
+                        ImageNode::new(icon),
+                        Node {
+                            width: Val::Px(SLOT),
+                            height: Val::Px(SLOT),
+                            ..default()
+                        },
+                    ));
+                }
+                b.spawn(quickslot_frame());
+            });
+        });
     }
 }
