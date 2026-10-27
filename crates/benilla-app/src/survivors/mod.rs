@@ -51,6 +51,13 @@ impl Plugin for SurvivorsPlugin {
             .init_resource::<gear::GearCatalog>()
             .add_systems(Update, gear::build_catalog.before(hud::menu_preview))
             .add_systems(Update, panels::build_panels)
+            .init_resource::<menu::MenuStep>()
+            .add_systems(
+                Update,
+                (menu::show_step, menu::refresh_info)
+                    .after(menu::menu_clicks)
+                    .before(crate::glue::GlueVisuals),
+            )
             .init_resource::<hero::CamRig>()
             .init_resource::<hero::AimPoint>()
             .init_resource::<abilities::PendingHits>()
