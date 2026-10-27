@@ -48,7 +48,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$pass" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/cert.p12"
-          security find-identity -v -p codesigning "$keychain" | grep "Developer ID Application"
+          security find-identity "$keychain" | grep "Developer ID Application"
 
       - name: Write the Sparkle key and, if used, the notary API key
         env:
