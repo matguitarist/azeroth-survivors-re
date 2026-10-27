@@ -2,7 +2,8 @@
 //! look, begins once the world is up, takes a random card at every level, walks to the nearest
 //! gem away from the crowd and logs the run every ten seconds; `WOW_SURVIVORS_SHOTS=<dir>` also
 //! saves a screenshot every few seconds, which needs no window focus. A `:idle`, `:all` or `:late`
-//! suffix on the class name changes the run, as the fields below say. `WOW_SURVIVORS_MAP=<index or
+//! suffix on the class name changes the run, as the fields below say; `:settings` pauses and shows
+//! each tab of Settings, for their screenshots. `WOW_SURVIVORS_MAP=<index or
 //! name>` picks the battleground.
 
 use bevy::prelude::*;
@@ -26,6 +27,8 @@ pub(super) struct Auto {
     /// `<class>:late`: the whole pool at its top level, two thirds of the way in, for the crowd at
     /// its thickest.
     late: bool,
+    /// `<class>:settings`: pause a few seconds in and show each Settings tab.
+    settings: bool,
     frames: u32,
     wait: f32,
     shots: Option<std::path::PathBuf>,
@@ -64,6 +67,7 @@ pub(super) fn from_env() -> Option<Auto> {
     let idle = mode.eq_ignore_ascii_case("idle");
     let late = mode.eq_ignore_ascii_case("late");
     let all = late || mode.eq_ignore_ascii_case("all");
+    let settings = mode.eq_ignore_ascii_case("settings");
     let class = data::CLASSES
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(name))
@@ -90,6 +94,7 @@ pub(super) fn from_env() -> Option<Auto> {
         idle,
         all,
         late,
+        settings,
         frames: 0,
         wait: 0.0,
         shots,
@@ -165,6 +170,8 @@ pub(super) fn drive(
     loading: Res<crate::loading_screen::LoadingScreen>,
     heroes: Query<(), With<Hero>>,
     enemies: Query<&Enemy>,
+    mut open: ResMut<super::panels::SettingsOpen>,
+    mut tab: ResMut<super::panels::Tab>,
 ) {
     let dt = time.delta_secs();
     auto.wait += dt;
@@ -234,6 +241,33 @@ pub(super) fn drive(
             if auto.wait > 6.0 {
                 next.set(Phase::Menu);
                 auto.wait = 0.0;
+            }
+        }
+        Phase::Playing if auto.settings => {
+            if auto.wait > 4.0 && !auto.seen.iter().any(|s| s.starts_with("settings")) {
+                next.set(Phase::Paused);
+                open.0 = true;
+                auto.wait = 0.0;
+            }
+        }
+        Phase::Paused if auto.settings => {
+            use super::panels::Tab;
+            for (i, (t, name)) in [
+                (Tab::Video, "video"),
+                (Tab::Sound, "sound"),
+                (Tab::Controls, "controls"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let at = 1.0 + i as f32 * 1.5;
+                if auto.wait > at && auto.wait < at + 1.5 {
+                    if *tab != t {
+                        *tab = t;
+                    } else if auto.wait > at + 0.8 {
+                        auto.capture_once(&mut commands, format!("settings-{name}"));
+                    }
+                }
             }
         }
         _ => auto.wait = 0.0,

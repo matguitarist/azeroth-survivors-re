@@ -2,8 +2,10 @@
 //! backdrop under its `UI-DialogBox-Header` plaque, with the glue screens' red buttons
 //! ([`crate::glue::widgets::glue_button`]), so they match the pick screen. Built into
 //! [`PauseRoot`] and [`OverRoot`] once the glue art is in. The pause menu's Settings swaps in a
-//! second dialog: the sound volumes (the engine's own CVars, saved with its config), the
-//! camera lock and the controls.
+//! second dialog, tabbed as 1.12 splits its Video and Sound options: each row writes the engine's
+//! own CVar, which applies it and saves it with the config; the latched display rows are
+//! committed at once, as the options' Okay does with `RestartGx()`. The Controls tab holds the
+//! camera lock, saved beside the profile, and every control.
 
 use bevy::prelude::*;
 
@@ -14,7 +16,7 @@ use super::hud::{
 use super::Phase;
 use crate::glue::art::GlueArt;
 use crate::glue::backdrop::{backdrop_border, tiled_bg_node};
-use crate::glue::widgets::{abs, dial_arrow, glue_button, GlueBtnKind};
+use crate::glue::widgets::{abs, dial_arrow, glue_button, GlueBtnKind, GlueDisabled};
 use crate::glue::GlueClicks;
 
 /// `GameMenuFrame`'s width, widened to the glue buttons.
@@ -23,7 +25,7 @@ const PAUSE_W: f32 = 240.0;
 const OVER_W: f32 = 460.0;
 
 /// The Settings dialog's width.
-const SETTINGS_W: f32 = 320.0;
+const SETTINGS_W: f32 = 340.0;
 
 /// On a root once its dialog is built.
 #[derive(Component)]
@@ -32,6 +34,21 @@ pub(super) struct PanelBuilt;
 /// Whether the pause menu shows Settings in place of its buttons.
 #[derive(Resource, Default)]
 pub(super) struct SettingsOpen(pub(super) bool);
+
+/// Settings' tabs, and the one shown.
+#[derive(Component, Resource, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub(super) enum Tab {
+    #[default]
+    Video,
+    Sound,
+    Controls,
+}
+
+const TABS: [(Tab, &str); 3] = [
+    (Tab::Video, "Video"),
+    (Tab::Sound, "Sound"),
+    (Tab::Controls, "Controls"),
+];
 
 /// The pause root's two dialogs.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +61,122 @@ pub(super) enum PauseBox {
 pub(super) enum Setting {
     /// One of [`VOLUMES`].
     Volume(usize),
+    /// One of [`CHOICES`].
+    Choice(usize),
+    /// Fullscreen, windowed or maximized: `gxWindow` and `gxMaximize` together.
+    Display,
     Camera,
+}
+
+/// A video row: its CVar and the stops it steps through, `(value, shown)`. A latched row is
+/// committed the moment it moves.
+struct Choice {
+    label: &'static str,
+    cvar: &'static str,
+    stops: &'static [(&'static str, &'static str)],
+    latched: bool,
+}
+
+const OFF_ON: &[(&str, &str)] = &[("0", "Off"), ("1", "On")];
+const LOW_HIGH: &[(&str, &str)] = &[("0", "Low"), ("1", "Medium"), ("2", "High")];
+
+/// The 1.12 Video Options the engine applies, and its own render scale.
+const CHOICES: [Choice; 9] = [
+    Choice {
+        label: "Vertical Sync",
+        cvar: "gxVSync",
+        stops: OFF_ON,
+        latched: true,
+    },
+    Choice {
+        label: "Anti-aliasing *",
+        cvar: "gxMultisample",
+        stops: &[("1", "Off"), ("2", "2x"), ("4", "4x"), ("8", "8x")],
+        latched: true,
+    },
+    Choice {
+        label: "Render Scale",
+        cvar: "renderScale",
+        stops: &[
+            ("0.5", "50%"),
+            ("0.75", "75%"),
+            ("1", "100%"),
+            ("1.5", "150%"),
+            ("2", "200%"),
+        ],
+        latched: false,
+    },
+    Choice {
+        label: "View Distance",
+        cvar: "farclip",
+        stops: &[
+            ("177", "177 yd"),
+            ("277", "277 yd"),
+            ("350", "350 yd"),
+            ("477", "477 yd"),
+            ("577", "577 yd"),
+            ("677", "677 yd"),
+            ("777", "777 yd"),
+        ],
+        latched: false,
+    },
+    Choice {
+        label: "Ground Clutter",
+        cvar: "WorldDetail",
+        stops: LOW_HIGH,
+        latched: false,
+    },
+    Choice {
+        label: "Spell Detail",
+        cvar: "spellEffectLevel",
+        stops: LOW_HIGH,
+        latched: false,
+    },
+    Choice {
+        label: "Weather",
+        cvar: "weatherDensity",
+        stops: &[("0", "Low"), ("1", "Medium"), ("2", "High"), ("3", "Ultra")],
+        latched: false,
+    },
+    Choice {
+        label: "Full-Screen Glow",
+        cvar: "ffxGlow",
+        stops: OFF_ON,
+        latched: false,
+    },
+    Choice {
+        label: "Texture Filtering *",
+        cvar: "anisotropic",
+        stops: &[
+            ("1", "Bilinear"),
+            ("2", "2x Aniso"),
+            ("4", "4x Aniso"),
+            ("8", "8x Aniso"),
+            ("16", "16x Aniso"),
+        ],
+        latched: false,
+    },
+];
+
+const DISPLAY_MODES: [&str; 3] = ["Fullscreen", "Windowed", "Maximized"];
+
+/// The stop nearest a CVar's value.
+fn stop_of(cvars: &crate::cvars::Cvars, c: &Choice) -> usize {
+    let now = cvars.num(c.cvar).unwrap_or(0.0);
+    (0..c.stops.len())
+        .min_by(|&a, &b| {
+            let d = |i: usize| (c.stops[i].0.parse::<f32>().unwrap_or(0.0) - now).abs();
+            d(a).total_cmp(&d(b))
+        })
+        .unwrap_or(0)
+}
+
+fn display_of(cvars: &crate::cvars::Cvars) -> usize {
+    match (cvars.flag("gxWindow"), cvars.flag("gxMaximize")) {
+        (Some(true), Some(true)) => 2,
+        (Some(true), _) => 1,
+        _ => 0,
+    }
 }
 
 /// A setting's arrow and its step.
@@ -180,14 +312,64 @@ pub(super) fn build_panels(
                 let title = centered_bundle(f, "Settings", 14.0, GOLD_TONE);
                 // Hidden by [`settings`] until opened; the pause root is hidden in play anyway.
                 dialog(root, art, SETTINGS_W, PauseBox::Settings, title, |b| {
-                    let rows = (0..VOLUMES.len())
-                        .map(|i| (Setting::Volume(i), VOLUMES[i].0))
-                        .chain([(Setting::Camera, "Camera (C)")]);
-                    for (setting, label) in rows {
-                        setting_row(b, art, f, setting, label);
-                    }
-                    controls(b, f, "Controls", &CONTROLS);
-                    controls(b, f, "Controller", &PAD_CONTROLS);
+                    b.spawn(Node {
+                        column_gap: Val::Px(4.0),
+                        margin: UiRect::bottom(Val::Px(4.0)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for (i, (_, label)) in TABS.iter().enumerate() {
+                            glue_button(
+                                row,
+                                art,
+                                f,
+                                UiAction::Tab(i as u8),
+                                label,
+                                96.0,
+                                30.0,
+                                GlueBtnKind::Small,
+                                1.0,
+                            );
+                        }
+                    });
+                    let section = |tab: Tab| {
+                        (
+                            tab,
+                            Node {
+                                flex_direction: FlexDirection::Column,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                        )
+                    };
+                    b.spawn(section(Tab::Video)).with_children(|v| {
+                        setting_row(v, art, f, Setting::Display, "Display");
+                        for (i, c) in CHOICES.iter().enumerate() {
+                            setting_row(v, art, f, Setting::Choice(i), c.label);
+                        }
+                        v.spawn(Node {
+                            margin: UiRect::top(Val::Px(4.0)),
+                            ..default()
+                        })
+                        .with_children(|n| {
+                            n.spawn(centered_bundle(
+                                f,
+                                "* applies on the next launch",
+                                11.0,
+                                DIM_GREY,
+                            ));
+                        });
+                    });
+                    b.spawn(section(Tab::Sound)).with_children(|v| {
+                        for (i, (label, _)) in VOLUMES.iter().enumerate() {
+                            setting_row(v, art, f, Setting::Volume(i), label);
+                        }
+                    });
+                    b.spawn(section(Tab::Controls)).with_children(|v| {
+                        setting_row(v, art, f, Setting::Camera, "Camera (C)");
+                        controls(v, f, "Keyboard and mouse", &CONTROLS);
+                        controls(v, f, "Controller", &PAD_CONTROLS);
+                    });
                     b.spawn(Node {
                         margin: UiRect::top(Val::Px(6.0)),
                         ..default()
@@ -343,14 +525,14 @@ fn setting_row(
     label: &str,
 ) {
     b.spawn(Node {
-        width: Val::Px(250.0),
-        height: Val::Px(32.0),
+        width: Val::Px(282.0),
+        height: Val::Px(30.0),
         ..default()
     })
     .with_children(|row| {
         row.spawn(Node {
             align_items: AlignItems::Center,
-            ..abs(1.0, 0.0, 0.0, 140.0, 32.0)
+            ..abs(1.0, 0.0, 0.0, 130.0, 32.0)
         })
         .with_children(|n| {
             n.spawn(text_bundle(f, label, 13.0, GOLD_TONE));
@@ -360,14 +542,14 @@ fn setting_row(
             &art.arrow_left,
             f,
             SettingStep(setting, -1),
-            140.0,
+            130.0,
             "<",
             1.0,
         );
         row.spawn(Node {
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
-            ..abs(1.0, 168.0, 0.0, 54.0, 32.0)
+            ..abs(1.0, 158.0, 0.0, 92.0, 32.0)
         })
         .with_children(|n| {
             n.spawn((
@@ -380,7 +562,7 @@ fn setting_row(
             &art.arrow_right,
             f,
             SettingStep(setting, 1),
-            222.0,
+            250.0,
             ">",
             1.0,
         );
@@ -388,24 +570,42 @@ fn setting_row(
 }
 
 /// The settings' arrows, what they read, and which pause dialog shows.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn settings(
     clicks: Res<GlueClicks>,
     open: Res<SettingsOpen>,
+    tab: Res<Tab>,
     steps: Query<(Entity, &SettingStep)>,
     mut values: Query<(&SettingValue, &mut Text)>,
-    mut boxes: Query<(&PauseBox, &mut Node)>,
+    mut boxes: Query<(&PauseBox, &mut Node), Without<Tab>>,
+    mut sections: Query<(&Tab, &mut Node), Without<PauseBox>>,
+    mut tab_buttons: Query<(&UiAction, &mut GlueDisabled)>,
     mut cvars: Option<ResMut<crate::cvars::Cvars>>,
     mut rig: ResMut<super::hero::CamRig>,
 ) {
-    for (b, mut node) in &mut boxes {
-        let show = (*b == PauseBox::Settings) == open.0;
+    let shown = |node: &mut Node, show: bool| {
         let want = if show { Display::Flex } else { Display::None };
         if node.display != want {
             node.display = want;
         }
+    };
+    for (b, mut node) in &mut boxes {
+        shown(&mut node, (*b == PauseBox::Settings) == open.0);
     }
     if !open.0 {
         return;
+    }
+    for (t, mut node) in &mut sections {
+        shown(&mut node, *t == *tab);
+    }
+    // The tab on show reads as pressed in.
+    for (action, mut disabled) in &mut tab_buttons {
+        if let UiAction::Tab(i) = *action {
+            let on = TABS.get(usize::from(i)).is_some_and(|t| t.0 == *tab);
+            if disabled.0 != on {
+                disabled.0 = on;
+            }
+        }
     }
     // A volume steps by a tenth, as the Sound panel's sliders do.
     let volume = |cvars: &crate::cvars::Cvars, i: usize| {
@@ -423,6 +623,25 @@ pub(super) fn settings(
                     cvars.set(VOLUMES[i].1, &format!("{v}"));
                 }
             }
+            Setting::Choice(i) => {
+                if let Some(cvars) = cvars.as_deref_mut() {
+                    let c = &CHOICES[i];
+                    let at = stop_of(cvars, c) as i32 + i32::from(step.1);
+                    let at = at.clamp(0, c.stops.len() as i32 - 1) as usize;
+                    cvars.set(c.cvar, c.stops[at].0);
+                    if c.latched {
+                        cvars.commit_latched();
+                    }
+                }
+            }
+            Setting::Display => {
+                if let Some(cvars) = cvars.as_deref_mut() {
+                    let at = (display_of(cvars) as i32 + i32::from(step.1)).clamp(0, 2);
+                    cvars.set("gxWindow", if at == 0 { "0" } else { "1" });
+                    cvars.set("gxMaximize", if at == 2 { "1" } else { "0" });
+                    cvars.commit_latched();
+                }
+            }
             Setting::Camera => rig.toggle_mode(),
         }
     }
@@ -430,6 +649,14 @@ pub(super) fn settings(
         let want = match value.0 {
             Setting::Volume(i) => match cvars.as_deref() {
                 Some(c) => format!("{:.0}%", volume(c, i) * 100.0),
+                None => "—".to_string(),
+            },
+            Setting::Choice(i) => match cvars.as_deref() {
+                Some(c) => CHOICES[i].stops[stop_of(c, &CHOICES[i])].1.to_string(),
+                None => "—".to_string(),
+            },
+            Setting::Display => match cvars.as_deref() {
+                Some(c) => DISPLAY_MODES[display_of(c)].to_string(),
                 None => "—".to_string(),
             },
             Setting::Camera => match rig.mode {
@@ -452,6 +679,7 @@ pub(super) fn buttons(
     mut next: ResMut<NextState<Phase>>,
     mut exit: MessageWriter<AppExit>,
     mut open: ResMut<SettingsOpen>,
+    mut tab: ResMut<Tab>,
 ) {
     for (e, action) in &actions {
         if !clicks.hit(e) {
@@ -461,11 +689,50 @@ pub(super) fn buttons(
             (UiAction::Resume, Phase::Paused) => next.set(Phase::Playing),
             (UiAction::Settings, Phase::Paused) => open.0 = true,
             (UiAction::Done, _) => open.0 = false,
+            (UiAction::Tab(i), _) => {
+                if let Some(&(t, _)) = TABS.get(usize::from(i)) {
+                    *tab = t;
+                }
+            }
             (UiAction::MainMenu, Phase::Paused | Phase::GameOver) => next.set(Phase::Menu),
             (UiAction::Quit, Phase::Paused | Phase::GameOver) => {
                 exit.write(AppExit::Success);
             }
             _ => {}
         }
+    }
+}
+
+/// The camera lock, saved as `benilla-config/survivors-settings.txt` (`camera locked|free`), so it
+/// holds across launches as the CVars do.
+fn settings_path() -> Option<std::path::PathBuf> {
+    crate::local_state::home().map(|h| h.join("survivors-settings.txt"))
+}
+
+/// Load the saved camera lock once, then save it whenever it moves (the C key or Settings).
+pub(super) fn keep_camera(
+    mut rig: ResMut<super::hero::CamRig>,
+    mut seen: Local<Option<super::hero::CamMode>>,
+) {
+    use super::hero::CamMode;
+    let Some(last) = *seen else {
+        let saved = settings_path().and_then(|p| crate::local_state::read_to_string(&p).ok());
+        let free = saved.is_some_and(|t| t.lines().any(|l| l.trim() == "camera free"));
+        if free && rig.mode == CamMode::Fixed {
+            rig.toggle_mode();
+        }
+        *seen = Some(rig.mode);
+        return;
+    };
+    if last == rig.mode {
+        return;
+    }
+    *seen = Some(rig.mode);
+    let word = match rig.mode {
+        CamMode::Fixed => "locked",
+        CamMode::Orbit => "free",
+    };
+    if let Some(path) = settings_path() {
+        let _ = crate::local_state::write_atomic(&path, &format!("camera {word}\n"));
     }
 }

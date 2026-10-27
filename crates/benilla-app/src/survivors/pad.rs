@@ -6,7 +6,7 @@
 //! The pick screen, the pause menu's buttons and Settings stay mouse-driven, as the glue screens
 //! are; a pad still starts the run, pauses, picks the cards and plays again.
 
-use bevy::input::gamepad::{Gamepad, GamepadButton};
+use bevy::input::gamepad::{Gamepad, GamepadButton, GamepadConnection, GamepadConnectionEvent};
 use bevy::prelude::*;
 use bevy::window::CursorMoved;
 
@@ -22,6 +22,27 @@ pub(super) struct Pad {
     /// The sticks past the dead zone, rescaled to 0..1, up positive.
     pub left: Vec2,
     pub right: Vec2,
+}
+
+/// Name each pad as it connects, with its ids, so an unmapped one can be told apart. A pad that
+/// never shows here is not a HID device to the system: the Amazon Luna on a Mac's USB speaks
+/// Xbox 360's vendor protocol, which macOS has no driver for; over Bluetooth it is a mapped HID
+/// pad.
+pub(super) fn log_pads(mut events: MessageReader<GamepadConnectionEvent>) {
+    for e in events.read() {
+        match &e.connection {
+            GamepadConnection::Connected {
+                name,
+                vendor_id,
+                product_id,
+            } => info!(
+                "gamepad connected: {name} (vendor {:04x}, product {:04x})",
+                vendor_id.unwrap_or(0),
+                product_id.unwrap_or(0)
+            ),
+            GamepadConnection::Disconnected => info!("gamepad disconnected"),
+        }
+    }
 }
 
 /// The keys a button presses on each screen.

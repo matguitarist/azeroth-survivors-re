@@ -172,6 +172,8 @@ pub(super) enum UiAction {
     Settings,
     /// Settings back to the pause menu.
     Done,
+    /// One of Settings' tabs.
+    Tab(u8),
 }
 
 #[derive(Clone, Copy)]
