@@ -1,6 +1,7 @@
 # Build, sign, notarize and publish the macOS app when a version tag (v1.2.3) is pushed. The
 # release carries the dmg (first install), the zip and appcast.xml (Sparkle updates): installed
-# apps read https://github.com/<repo>/releases/latest/download/appcast.xml. See macos/README.md.
+# apps read https://github.com/<repo>/releases/latest/download/appcast.xml. A suffixed tag
+# (v0.2.1-ci1) runs everything but publishing. See macos/README.md.
 name: macOS release
 
 on:
@@ -9,8 +10,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build, e.g. v0.2.1"
+        description: "Existing tag to build, e.g. v0.2.1"
         required: true
+      publish:
+        description: "Upload to the tag's release (off: a dry run, kept as a workflow artifact)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,6 +26,8 @@ jobs:
     timeout-minutes: 120
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # A tag with a suffix (v0.2.1-ci1) is a dry run: built and notarized, kept as an artifact.
+      PUBLISH: ${{ (github.event_name == 'push' && !contains(github.ref_name, '-')) || github.event.inputs.publish == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,14 +48,18 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$pass" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$keychain" | grep "Developer ID Application"
 
-      - name: Write the notary and Sparkle keys
+      - name: Write the Sparkle key and, if used, the notary API key
         env:
           NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          echo "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
           echo "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle.key"
+          if [ -n "$NOTARY_KEY_P8" ]; then
+            echo "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+            echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+          fi
 
       - uses: actions/cache@v4
         with:
@@ -60,13 +71,24 @@ jobs:
       - name: Build, notarize and package (universal)
         env:
           ARCHS: arm64 x86_64
-          NOTARY_KEY: ${{ runner.temp }}/notary.p8
+          # Notarization: an Apple ID with an app-specific password, or an API key (NOTARY_KEY_*).
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
           SPARKLE_KEY_FILE: ${{ runner.temp }}/sparkle.key
         run: VERSION="${TAG#v}" scripts/macos-app.sh --release
 
+      - name: Keep the build (dry run)
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ env.TAG }}
+          path: target/macos/dist/
+
       - name: Publish the release
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

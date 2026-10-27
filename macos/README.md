@@ -61,21 +61,27 @@ signs ad-hoc: the app runs on the Mac that built it, with updates off.
    target/macos/sparkle-2.10.0/bin/generate_keys --account azeroth-survivors -x sparkle-private-key.txt
    ```
 
-3. **GitHub Actions secrets** for `.github/workflows/macos-release.yml`:
+3. **GitHub Actions secrets** for `.github/workflows/macos-release.yml`, all set by one script
+   that asks for the passwords in hidden prompts:
+
+   ```bash
+   scripts/macos-ci-secrets.sh ~/Desktop/devide.p12
+   ```
 
    | secret | what |
    |---|---|
-   | `MACOS_CERT_P12` | the Developer ID Application certificate and key, exported from Keychain Access as .p12, base64 (`base64 -i cert.p12 \| pbcopy`) |
-   | `MACOS_CERT_PASSWORD` | the .p12's export password |
-   | `NOTARY_KEY_P8` | an App Store Connect API key (Users and Access → Integrations → Keys, "Developer" role), the .p8 file's contents |
-   | `NOTARY_KEY_ID` | that key's ID |
-   | `NOTARY_ISSUER` | the issuer ID shown above the keys list |
-   | `SPARKLE_PRIVATE_KEY` | the contents of `sparkle-private-key.txt` from step 2 |
+   | `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD` | the Developer ID Application certificate and key, exported from Keychain Access as .p12 |
+   | `NOTARY_APPLE_ID`, `NOTARY_PASSWORD`, `NOTARY_TEAM_ID` | the Apple ID, an app-specific password for it, and the team |
+   | `SPARKLE_PRIVATE_KEY` | the update signing key, exported from the keychain |
+
+   An App Store Connect API key works for notarization instead: set `NOTARY_KEY_P8` (the .p8
+   file's contents), `NOTARY_KEY_ID` and `NOTARY_ISSUER`.
 
 ## Shipping a version
 
 1. Bump `version` in the workspace `Cargo.toml` and merge.
-2. Tag and push: `git tag v0.2.1 && git push origin v0.2.1`.
+2. Tag and push: `git tag v0.2.1 && git push origin v0.2.1`. A tag with a suffix
+   (`v0.2.1-ci1`) is a dry run: everything but publishing, the files kept as a workflow artifact.
 3. The workflow builds a universal app, notarizes it, and publishes a release with the dmg,
    the zip and `appcast.xml`. Installed apps see the update on their next check.
 

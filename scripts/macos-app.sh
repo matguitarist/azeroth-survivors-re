@@ -12,8 +12,9 @@
 #   VERSION         CFBundleShortVersionString; default the crate's version
 #   BUILD           CFBundleVersion, which Sparkle compares; default from VERSION (1.2.3 → 1002003)
 #   REPO            owner/name hosting the releases; default GITHUB_REPOSITORY, else origin's
-#   NOTARY_PROFILE  `xcrun notarytool store-credentials` profile (default AzerothSurvivors), or
-#   NOTARY_KEY, NOTARY_KEY_ID, NOTARY_ISSUER   an App Store Connect API key (.p8 path), for CI
+#   NOTARY_PROFILE  `xcrun notarytool store-credentials` profile (default AzerothSurvivors), or, for CI,
+#   NOTARY_APPLE_ID, NOTARY_PASSWORD, NOTARY_TEAM_ID   an Apple ID and app-specific password, or
+#   NOTARY_KEY, NOTARY_KEY_ID, NOTARY_ISSUER           an App Store Connect API key (.p8 path)
 #   SPARKLE_KEY_FILE  Sparkle private key file (CI); default the keychain's `azeroth-survivors` key
 set -euo pipefail
 
@@ -171,6 +172,8 @@ echo "built $APP ($VERSION, build $BUILD, $ARCHS, signed: $SIGN_IDENTITY)"
 notarize() {
     if [ -n "${NOTARY_KEY:-}" ]; then
         xcrun notarytool submit "$1" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+    elif [ -n "${NOTARY_APPLE_ID:-}" ]; then
+        xcrun notarytool submit "$1" --apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_PASSWORD" --team-id "$NOTARY_TEAM_ID" --wait
     else
         xcrun notarytool submit "$1" --keychain-profile "${NOTARY_PROFILE:-AzerothSurvivors}" --wait
     fi
