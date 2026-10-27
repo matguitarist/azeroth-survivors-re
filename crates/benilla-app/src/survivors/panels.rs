@@ -186,7 +186,8 @@ pub(super) fn build_panels(
                     for (setting, label) in rows {
                         setting_row(b, art, f, setting, label);
                     }
-                    controls(b, f);
+                    controls(b, f, "Controls", &CONTROLS);
+                    controls(b, f, "Controller", &PAD_CONTROLS);
                     b.spawn(Node {
                         margin: UiRect::top(Val::Px(6.0)),
                         ..default()
@@ -292,14 +293,25 @@ const CONTROLS: [(&str, &str); 9] = [
     ("Pause", "Escape"),
 ];
 
-/// The controls under a GameFontNormal heading: each action in gold, its input in white.
-fn controls(b: &mut ChildSpawnerCommands, f: &Handle<Font>) {
+/// The same on a controller ([`super::pad`]).
+const PAD_CONTROLS: [(&str, &str); 7] = [
+    ("Move", "Left stick"),
+    ("Turn / zoom camera", "Right stick"),
+    ("Jump", "A"),
+    ("Class movement spell", "X / RB"),
+    ("Lock / free camera", "Y"),
+    ("Pick a level-up card", "X  Y  B"),
+    ("Pause / play again", "Start"),
+];
+
+/// Controls under a GameFontNormal heading: each action in gold, its input in white.
+fn controls(b: &mut ChildSpawnerCommands, f: &Handle<Font>, heading: &str, list: &[(&str, &str)]) {
     b.spawn(Node {
         margin: UiRect::top(Val::Px(8.0)),
         ..default()
     })
     .with_children(|h| {
-        h.spawn(centered_bundle(f, "Controls", 14.0, GOLD_TONE));
+        h.spawn(centered_bundle(f, heading, 14.0, GOLD_TONE));
     });
     b.spawn(Node {
         width: Val::Px(260.0),
@@ -308,7 +320,7 @@ fn controls(b: &mut ChildSpawnerCommands, f: &Handle<Font>) {
         ..default()
     })
     .with_children(|table| {
-        for (action, input) in CONTROLS {
+        for &(action, input) in list {
             table
                 .spawn(Node {
                     justify_content: JustifyContent::SpaceBetween,

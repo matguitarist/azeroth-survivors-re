@@ -17,6 +17,7 @@ mod hud;
 mod menu;
 mod minimap;
 mod mobility;
+mod pad;
 mod panels;
 mod profile;
 mod units;
@@ -51,6 +52,8 @@ impl Plugin for SurvivorsPlugin {
             .init_resource::<gear::GearCatalog>()
             .add_systems(Update, gear::build_catalog.before(hud::menu_preview))
             .init_resource::<panels::SettingsOpen>()
+            .init_resource::<pad::Pad>()
+            .add_systems(PreUpdate, pad::read_pad.after(bevy::input::InputSystems))
             .add_systems(
                 Update,
                 (panels::build_panels, panels::settings.before(crate::glue::GlueVisuals)),

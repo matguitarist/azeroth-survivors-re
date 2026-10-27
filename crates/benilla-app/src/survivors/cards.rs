@@ -209,6 +209,9 @@ pub(super) fn deal_cards(
                     row_gap: Val::Px(6.0),
                     border: UiRect::all(Val::Px(2.0)),
                     border_radius: BorderRadius::all(Val::Px(10.0)),
+                    // The landing shine waits left of the card and rests right of it: only its
+                    // sweep across may show.
+                    overflow: Overflow::clip(),
                     ..default()
                 },
                 BorderColor::all(rc),

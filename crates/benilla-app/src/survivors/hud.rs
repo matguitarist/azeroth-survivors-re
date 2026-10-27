@@ -813,7 +813,12 @@ pub(super) fn setup_hud(
                     ..default()
                 },
             ));
-            root.spawn(centered(f, "Click a card, or press 1, 2 or 3", 14.0, DIM));
+            root.spawn(centered(
+                f,
+                "Click a card, press 1, 2 or 3, or X, Y or B on a controller",
+                14.0,
+                DIM,
+            ));
         });
 
     // --- Pause; [`super::panels`] builds its dialog once the glue art is in. ---
