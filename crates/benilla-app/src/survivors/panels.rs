@@ -2,8 +2,8 @@
 //! backdrop under its `UI-DialogBox-Header` plaque, with the glue screens' red buttons
 //! ([`crate::glue::widgets::glue_button`]), so they match the pick screen. Built into
 //! [`PauseRoot`] and [`OverRoot`] once the glue art is in. The pause menu's Settings swaps in a
-//! second dialog: the sound volumes (the engine's own CVars, saved with its config) and the
-//! camera lock.
+//! second dialog: the sound volumes (the engine's own CVars, saved with its config), the
+//! camera lock and the controls.
 
 use bevy::prelude::*;
 
@@ -186,6 +186,7 @@ pub(super) fn build_panels(
                     for (setting, label) in rows {
                         setting_row(b, art, f, setting, label);
                     }
+                    controls(b, f);
                     b.spawn(Node {
                         margin: UiRect::top(Val::Px(6.0)),
                         ..default()
@@ -276,6 +277,49 @@ pub(super) fn build_panels(
                 });
             });
     }
+}
+
+/// What each input does in a run, as the Key Bindings panel lists them.
+const CONTROLS: [(&str, &str); 9] = [
+    ("Move", "W A S D / Arrows"),
+    ("Run forward", "Both mouse buttons"),
+    ("Jump", "Space"),
+    ("Class movement spell", "F"),
+    ("Lock / free camera", "C"),
+    ("Turn camera (free)", "Drag either button"),
+    ("Zoom", "Mouse wheel"),
+    ("Pick a level-up card", "1  2  3"),
+    ("Pause", "Escape"),
+];
+
+/// The controls under a GameFontNormal heading: each action in gold, its input in white.
+fn controls(b: &mut ChildSpawnerCommands, f: &Handle<Font>) {
+    b.spawn(Node {
+        margin: UiRect::top(Val::Px(8.0)),
+        ..default()
+    })
+    .with_children(|h| {
+        h.spawn(centered_bundle(f, "Controls", 14.0, GOLD_TONE));
+    });
+    b.spawn(Node {
+        width: Val::Px(260.0),
+        flex_direction: FlexDirection::Column,
+        row_gap: Val::Px(2.0),
+        ..default()
+    })
+    .with_children(|table| {
+        for (action, input) in CONTROLS {
+            table
+                .spawn(Node {
+                    justify_content: JustifyContent::SpaceBetween,
+                    ..default()
+                })
+                .with_children(|row| {
+                    row.spawn(text_bundle(f, action, 12.0, GOLD_TONE));
+                    row.spawn(text_bundle(f, input, 12.0, Color::WHITE));
+                });
+        }
+    });
 }
 
 /// A setting's row: its name, then the pick screen's dial arrows around where it stands.

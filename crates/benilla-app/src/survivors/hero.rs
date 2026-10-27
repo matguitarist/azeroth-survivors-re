@@ -215,6 +215,7 @@ pub(super) fn aim_cursor(
 pub(super) fn drive_hero(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     phase: Res<State<Phase>>,
     run: Res<Run>,
     selection: Res<Selection>,
@@ -247,10 +248,22 @@ pub(super) fn drive_hero(
                 if keys.any_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) {
                     dir.x += 1.0;
                 }
+                // Both mouse buttons run, as in WoW: unlocked, forward along the camera while the
+                // drag steers it; locked, toward the cursor the hero faces.
+                let both = mouse.pressed(MouseButton::Left) && mouse.pressed(MouseButton::Right);
+                if both && rig.mode == CamMode::Orbit {
+                    dir.z -= 1.0;
+                }
                 // In orbit mode WASD is camera-relative; in fixed mode it stays world-relative.
                 if rig.mode == CamMode::Orbit {
                     let (sy, cy) = rig.yaw.sin_cos();
                     dir = Vec3::new(dir.x * cy + dir.z * sy, 0.0, dir.z * cy - dir.x * sy);
+                }
+                let toward = aim.0.map(|a| flat(a - tf.translation));
+                if let Some(d) =
+                    toward.filter(|d| both && rig.mode == CamMode::Fixed && d.length() > 0.5)
+                {
+                    dir += d.normalize();
                 }
             }
             let mut pos = tf.translation;
