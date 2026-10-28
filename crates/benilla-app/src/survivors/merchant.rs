@@ -211,6 +211,9 @@ pub(super) struct WareRank(usize);
 pub(super) struct WareEffect(usize);
 #[derive(Component)]
 pub(super) struct WarePrice(usize);
+/// The Merchant button and the purse over it, shown on character select only.
+#[derive(Component)]
+pub(super) struct MerchantCorner;
 /// The purse, under the Merchant button and in the dialog.
 #[derive(Component)]
 pub(super) struct PurseText;
@@ -237,7 +240,7 @@ pub(super) fn build_merchant(
     let f = &font.0;
     let art = &*art;
     commands.entity(root).insert(MerchantBuilt).with_children(|ui| {
-        ui.spawn(Node {
+        ui.spawn((MerchantCorner, Node {
             position_type: PositionType::Absolute,
             left: Val::Px(24.0),
             bottom: Val::Px(96.0),
@@ -245,7 +248,7 @@ pub(super) fn build_merchant(
             align_items: AlignItems::Center,
             row_gap: Val::Px(2.0),
             ..default()
-        })
+        }))
         .with_children(|c| {
             c.spawn((PurseText, centered_bundle(f, "", 13.0, Color::WHITE)));
             glue_button(

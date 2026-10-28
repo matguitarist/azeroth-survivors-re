@@ -844,13 +844,22 @@ pub(super) fn keys(
     map: Res<super::worldmap::MapOpen>,
     mut replay: ResMut<Replay>,
     heroes: Query<(), With<Hero>>,
+    (step, delete, profile): (
+        Res<super::menu::MenuStep>,
+        Res<super::menu::DeleteOpen>,
+        Res<super::profile::Profile>,
+    ),
 ) {
     match phase.get() {
         Phase::Menu => {
-            // A replay goes once the reset run's hero is back on its feet.
+            // A replay goes once the reset run's hero is back on its feet; Enter is Enter World
+            // on character select only.
             let again = replay.0 && !heroes.is_empty();
-            if (keys.just_pressed(KeyCode::Enter) || again) && start_run(&mut run, &mut selection)
-            {
+            let enter = keys.just_pressed(KeyCode::Enter)
+                && *step == super::menu::MenuStep::Select
+                && !delete.0
+                && profile.hero().is_some();
+            if (enter || again) && start_run(&mut run, &mut selection) {
                 next.set(Phase::Playing);
             }
             if again {

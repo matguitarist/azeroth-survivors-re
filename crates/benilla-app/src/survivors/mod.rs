@@ -109,9 +109,17 @@ impl Plugin for SurvivorsPlugin {
             )
             .add_systems(Update, hud::refresh_bar_info.after(hud::refresh_hud))
             .init_resource::<menu::MenuStep>()
+            .init_resource::<menu::NameDraft>()
+            .init_resource::<menu::DeleteOpen>()
+            .add_systems(
+                PreUpdate,
+                menu::type_name
+                    .after(pad::read_pad)
+                    .before(crate::glue::glue_clicks),
+            )
             .add_systems(
                 Update,
-                (menu::show_step, menu::refresh_info)
+                (menu::show_step, menu::refresh_info, menu::refresh_chars)
                     .after(menu::menu_clicks)
                     .before(crate::glue::GlueVisuals),
             )
@@ -174,9 +182,9 @@ impl Plugin for SurvivorsPlugin {
                     (panels::buttons, panels::bag_input).chain(),
                     hud::keys,
                     hud::refresh_menu,
-                    menu::restore_pick,
+                    menu::restore_hero,
                     menu::build_menu,
-                    menu::rebuild_zones,
+                    menu::rebuild_lists,
                     menu::refresh_armor,
                     (menu::menu_clicks, menu::stage_follows_pick, menu::stage_veil).chain(),
                     menu::refresh_menu_ui.before(crate::glue::GlueVisuals),

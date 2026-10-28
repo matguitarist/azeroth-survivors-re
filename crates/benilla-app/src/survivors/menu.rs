@@ -1,6 +1,8 @@
-//! The run's pick screen, laid out like the 1.12 character create and select glue screens and built
-//! from their own widgets and art ([`crate::glue`]): the race, gender and class tower on the left,
-//! the zone list in the character-select frame on the right, Enter World at the bottom.
+//! The pick screen, laid out like the 1.12 character select and create glue screens and built from
+//! their own widgets and art ([`crate::glue`]). Character select comes first: the account's
+//! characters on the left, the picked one's zones in the character-select frame on the right,
+//! Enter World at the bottom, and Create New Character and Delete Character. Create is two steps:
+//! the race, gender and class tower, then the looks and the name.
 //!
 //! The survivors HUD lays out on the 768-unit canvas through `UiScale`, so every glue builder here
 //! takes a unit scale.
@@ -9,7 +11,7 @@ use bevy::prelude::*;
 use bevy::ui_render::ui_material::MaterialNode;
 
 use super::hud::{looks_for, rgb, start_run, HudFont, MenuRoot};
-use super::profile::{zone_order, Profile};
+use super::profile::{random_name, tidy_name, zone_order, Character, Profile, MAX_CHARACTERS};
 use super::units::Custom;
 use super::{data, Phase, Rng, Run, Selection};
 use crate::char_select::race_name;
@@ -55,19 +57,67 @@ pub(super) enum MenuAction {
     Randomize,
     Enter,
     Quit,
-    /// From the hero to the looks and the zone, and back.
+    /// From the hero to the looks and the name, and back.
     Next,
     Back,
+    /// A character in the list.
+    Char(usize),
+    /// Create New Character, Delete Character, and the delete dialog's two buttons.
+    NewChar,
+    DeleteChar,
+    ConfirmDelete,
+    CancelDelete,
+    /// The create screen's way back to character select, and Accept.
+    Cancel,
+    Create,
+    /// The name box's die.
+    RandomName,
 }
 
-/// The pick screen's two steps, as the modern create screen splits them: who the hero is, then
-/// how they look and where they fight.
+/// The pick screen's steps: character select, then create's two, as the modern create screen
+/// splits them: who the hero is, then how they look and what they are called.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum MenuStep {
     #[default]
+    Select,
     Hero,
     Customize,
 }
+
+/// The name being typed on the create screen, and why the last Accept refused it.
+#[derive(Resource, Default)]
+pub(super) struct NameDraft {
+    pub text: String,
+    pub error: Option<&'static str>,
+}
+
+/// Whether Delete Character's dialog is up.
+#[derive(Resource, Default)]
+pub(super) struct DeleteOpen(pub(super) bool);
+
+/// The character list, rebuilt with the zone list.
+#[derive(Component)]
+pub(super) struct CharFrame;
+
+/// The picked character's name on character select.
+#[derive(Component)]
+pub(super) struct HeroName;
+
+/// The create screen's name box, and the line under it.
+#[derive(Component)]
+pub(super) struct NameText;
+#[derive(Component)]
+pub(super) struct NameError;
+
+/// Delete Character's dialog, and its question.
+#[derive(Component)]
+pub(super) struct DeleteDialog;
+#[derive(Component)]
+pub(super) struct DeleteText;
+
+/// The create screen's Quit, there in Cancel's place while the account has no character.
+#[derive(Component)]
+pub(super) struct FirstQuit;
 
 /// A step's page; only the current one is laid out.
 #[derive(Component)]
@@ -130,38 +180,16 @@ const LOCKED: Color = Color::srgb(0.5, 0.5, 0.5);
 /// "Won", beside a zone already won.
 const WON: Color = Color::srgb(0.25, 0.85, 0.25);
 
-/// The saved pick, `benilla-config/survivors-pick.txt` (`localStorage` on the page):
-/// `class race sex map` and the five dials, restored at the menu so a reload keeps the last hero
-/// and zone.
-fn pick_path() -> Option<std::path::PathBuf> {
-    crate::local_state::home().map(|h| h.join("survivors-pick.txt"))
-}
-
-fn save_pick(sel: &Selection) {
-    let (Some(class), Some(&(_, race, sex))) = (sel.class, sel.look.and_then(|i| sel.looks.get(i)))
-    else {
-        return;
-    };
-    if let Some(path) = pick_path() {
-        let c = sel.custom;
-        let _ = crate::local_state::write_atomic(
-            &path,
-            &format!(
-                "{class} {race} {sex} {} {} {} {} {} {}",
-                sel.map, c.skin, c.face, c.hair_style, c.hair_color, c.facial_hair
-            ),
-        );
-    }
-}
-
-/// Restore the saved pick once the creature data can resolve its looks; a stale or missing file
-/// leaves the default. A zone that isn't open (the default, an older pick) gives way to the first
-/// starting zone.
-pub(super) fn restore_pick(
+/// Once the creature data can resolve looks: the picked character on character select, or the
+/// create screen for an account with none, its name drawn for the race.
+pub(super) fn restore_hero(
     creatures: Option<Res<crate::entities::Creatures>>,
     char_create: Option<Res<crate::entities::CharCreate>>,
     profile: Res<Profile>,
     mut selection: ResMut<Selection>,
+    mut step: ResMut<MenuStep>,
+    mut draft: ResMut<NameDraft>,
+    mut rng: ResMut<Rng>,
     mut done: Local<bool>,
 ) {
     if *done {
@@ -172,51 +200,56 @@ pub(super) fn restore_pick(
         return;
     };
     *done = true;
-    restore_saved(creatures, char_create, &mut selection);
-    if !profile.is_open(selection.map) {
-        if let Some(z) = zone_order().first() {
-            selection.map = z.map;
-            selection.stage = z.map;
-            selection.version += 1;
+    let all = all_looks(creatures, Some(char_create));
+    match profile.hero() {
+        Some(hero) => apply_hero(&mut selection, &all, hero, &profile),
+        None => {
+            *step = MenuStep::Hero;
+            new_name(&mut draft, &selection, &mut rng);
+            if let Some(z) = zone_order().first() {
+                selection.map = z.map;
+                selection.stage = z.map;
+                selection.version += 1;
+            }
         }
     }
 }
 
-fn restore_saved(
-    creatures: &crate::entities::Creatures,
-    char_create: &crate::entities::CharCreate,
-    selection: &mut Selection,
+/// Stand `hero` in the pick: their class, race, sex and looks, and their zone if it is open to
+/// them, else their first starting zone.
+fn apply_hero(
+    sel: &mut Selection,
+    all: &[Vec<(u32, u8, u8)>],
+    hero: &Character,
+    profile: &Profile,
 ) {
-    let Some(text) = pick_path().and_then(|p| crate::local_state::read_to_string(&p).ok()) else {
-        return;
-    };
-    let v: Vec<usize> = text
-        .split_whitespace()
-        .filter_map(|t| t.parse().ok())
-        .collect();
-    let (&[class, race, sex, map], dials) = (v.split_at(v.len().min(4)).0, v.get(4..9)) else {
-        return;
-    };
-    if let Some(&[skin, face, hair_style, hair_color, facial_hair]) = dials {
-        selection.custom = Custom {
-            skin: skin as u8,
-            face: face as u8,
-            hair_style: hair_style as u8,
-            hair_color: hair_color as u8,
-            facial_hair: facial_hair as u8,
-        };
-    }
-    if map < data::MAPS.len() {
-        selection.map = map;
-        selection.stage = map;
-        selection.version += 1;
-    }
-    if class < data::CLASSES.len() {
-        let all = all_looks(creatures, Some(char_create));
-        if let Some(l) = find(&all[class], Some(race as u8), Some(sex as u8)) {
-            set(selection, &all, class, l);
+    let class = hero.class.min(all.len().saturating_sub(1));
+    if let Some(looks) = all.get(class) {
+        let l = find(looks, Some(hero.race), Some(hero.sex)).or_else(|| find(looks, None, None));
+        if let Some(l) = l {
+            set(sel, all, class, l);
         }
     }
+    sel.custom = hero.custom;
+    let map = if profile.is_open(hero.map) {
+        hero.map
+    } else {
+        zone_order().first().map_or(0, |z| z.map)
+    };
+    if sel.map != map {
+        sel.map = map;
+    }
+    sel.version += 1;
+}
+
+/// A fresh name for the race picked.
+fn new_name(draft: &mut NameDraft, sel: &Selection, rng: &mut Rng) {
+    let race = sel
+        .look
+        .and_then(|i| sel.looks.get(i))
+        .map_or(1, |&(_, r, _)| r);
+    draft.text = random_name(race, &mut |n| rng.index(n.max(1)));
+    draft.error = None;
 }
 
 /// Every class's looks, `(display, race, sex)`, indexed like [`data::CLASSES`].
@@ -265,7 +298,7 @@ pub(super) fn build_menu(
                 position_type: PositionType::Absolute,
                 width: Val::Percent(100.0),
                 height: Val::Percent(100.0),
-                display: if step == MenuStep::Hero {
+                display: if step == MenuStep::Select {
                     Display::Flex
                 } else {
                     Display::None
@@ -275,48 +308,70 @@ pub(super) fn build_menu(
         )
     };
     commands.entity(root).insert(MenuBuilt).with_children(|ui| {
-        // Step one: who. The race banners on the left, the gender at the top, the classes along
-        // the bottom and what each pick means on the right.
-        ui.spawn(page(MenuStep::Hero)).with_children(|p| {
-            tower(p, &art, RACE_TOWER_H, |t| race_banners(t, &art, f));
-            gender_pair(p, &art, f);
-            class_bar(p, &art, f);
-            info_cards(p, &art, f);
-            corner_button(p, &art, f, MenuAction::Quit, "Quit", false);
-            corner_button(p, &art, f, MenuAction::Next, "Next", true);
-        });
-        // Step two: how they look, and where they fight.
-        ui.spawn(page(MenuStep::Customize)).with_children(|p| {
-            tower(p, &art, DIAL_TOWER_H, |t| dials(t, &art, f));
+        // Character select: the characters on the left, the picked one's zones on the right, its
+        // armor and name over Enter World.
+        ui.spawn(page(MenuStep::Select)).with_children(|p| {
+            char_frame(p, &art, f, &profile);
             zone_frame(p, &art, f, &profile);
             armor_strip(p, f);
-            // `CharSelectCharacterName`, GlueFontNormalHuge at BOTTOM (0,100).
+            bottom_text(p, f, HeroName, 192.0, 22.0, GOLD);
+            bottom_text(p, f, PickName, 172.0, 14.0, GOLD);
             p.spawn(Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(100.0),
+                bottom: Val::Px(40.0),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 ..default()
             })
             .with_children(|c| {
-                outlined_text(
+                glue_button(
                     c,
-                    Node::default(),
-                    (),
-                    PickName,
-                    GlueText {
-                        text: "",
-                        size: 22.0,
-                        color: GOLD,
-                        wrap: false,
-                    },
+                    &art,
                     f,
+                    MenuAction::Enter,
+                    "Enter World",
+                    200.0,
+                    60.0,
+                    GlueBtnKind::Normal,
                     1.0,
                 );
             });
-            corner_button(p, &art, f, MenuAction::Back, "Back", false);
-            corner_button(p, &art, f, MenuAction::Enter, "Enter World", true);
+            corner_button(p, &art, f, MenuAction::Quit, "Quit", false);
+            corner_button(p, &art, f, MenuAction::DeleteChar, "Delete Character", true);
         });
+        // Create, step one: who. The race banners on the left, the gender at the top, the classes
+        // along the bottom and what each pick means on the right.
+        ui.spawn(page(MenuStep::Hero)).with_children(|p| {
+            tower(p, &art, RACE_TOWER_H, |t| race_banners(t, &art, f));
+            gender_pair(p, &art, f);
+            class_bar(p, &art, f);
+            info_cards(p, &art, f);
+            corner_button(p, &art, f, MenuAction::Cancel, "Back", false);
+            p.spawn((
+                FirstQuit,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+            ))
+            .with_children(|q| {
+                corner_button(q, &art, f, MenuAction::Quit, "Quit", false);
+            });
+            corner_button(p, &art, f, MenuAction::Next, "Next", true);
+        });
+        // Step two: how they look, and what they are called.
+        ui.spawn(page(MenuStep::Customize)).with_children(|p| {
+            tower(p, &art, DIAL_TOWER_H, |t| dials(t, &art, f));
+            info_cards(p, &art, f);
+            // `CharSelectCharacterName`'s place, then `CharacterCreateNameEdit` under it.
+            bottom_text(p, f, PickName, 190.0, 22.0, GOLD);
+            name_box(p, &art, f);
+            corner_button(p, &art, f, MenuAction::Back, "Back", false);
+            corner_button(p, &art, f, MenuAction::Create, "Accept", true);
+        });
+        delete_dialog(ui, &art, f);
         // `CharacterCreateWoWLogo`, 256×128 at TOPLEFT (3,-7), after the towers so it draws over
         // their border art, as the create screen orders it.
         if let Some(logo) = &art.logo {
@@ -325,6 +380,160 @@ pub(super) fn build_menu(
                 abs(1.0, 3.0, 7.0, 256.0, 128.0),
             ));
         }
+    });
+}
+
+/// A line of text across the bottom, `bottom` up, centred.
+fn bottom_text(
+    p: &mut ChildSpawnerCommands,
+    f: &Handle<Font>,
+    marker: impl Component,
+    bottom: f32,
+    size: f32,
+    color: Color,
+) {
+    p.spawn(Node {
+        position_type: PositionType::Absolute,
+        bottom: Val::Px(bottom),
+        width: Val::Percent(100.0),
+        justify_content: JustifyContent::Center,
+        ..default()
+    })
+    .with_children(|c| {
+        outlined_text(
+            c,
+            Node::default(),
+            (),
+            marker,
+            GlueText {
+                text: "",
+                size,
+                color,
+                wrap: false,
+            },
+            f,
+            1.0,
+        );
+    });
+}
+
+/// `CharacterCreateNameEdit`: a framed box holding the name typed, a Randomize-name die beside
+/// it, and the line under it that says why a name was refused.
+fn name_box(p: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
+    let px = Val::Px;
+    p.spawn(Node {
+        position_type: PositionType::Absolute,
+        bottom: px(112.0),
+        width: Val::Percent(100.0),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::Center,
+        row_gap: px(6.0),
+        ..default()
+    })
+    .with_children(|col| {
+        col.spawn(Node {
+            align_items: AlignItems::Center,
+            column_gap: px(8.0),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Node {
+                    width: px(230.0),
+                    height: px(36.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                Interaction::default(),
+            ))
+            .with_children(|b| {
+                panel(b, art);
+                b.spawn((
+                    NameText,
+                    super::hud::centered_bundle(f, "", 16.0, Color::WHITE),
+                ));
+            });
+            glue_button(
+                row,
+                art,
+                f,
+                MenuAction::RandomName,
+                "Random Name",
+                120.0,
+                30.0,
+                GlueBtnKind::Small,
+                1.0,
+            );
+        });
+        col.spawn((
+            NameError,
+            super::hud::centered_bundle(f, "Type a name, 2 to 12 letters.", 12.0, DIM),
+        ));
+    });
+}
+
+/// Delete Character's dialog, over a darkened screen: the question, then Delete and Cancel.
+fn delete_dialog(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
+    let px = Val::Px;
+    ui.spawn((
+        DeleteDialog,
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+        // Holds the clicks: nothing under the dialog answers while it is up.
+        Interaction::default(),
+        bevy::ui::FocusPolicy::Block,
+    ))
+    .with_children(|d| {
+        d.spawn(Node {
+            width: px(420.0),
+            padding: UiRect::all(px(22.0)),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: px(12.0),
+            ..default()
+        })
+        .with_children(|b| {
+            panel(b, art);
+            b.spawn((DeleteText, super::hud::centered_bundle(f, "", 16.0, GOLD)));
+            b.spawn(super::hud::centered_bundle(
+                f,
+                "Their zones and armor go with them. The purse and the merchant's upgrades stay with the account.",
+                12.0,
+                Color::WHITE,
+            ));
+            b.spawn(Node {
+                column_gap: px(12.0),
+                margin: UiRect::top(px(4.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                for (action, label) in [
+                    (MenuAction::ConfirmDelete, "Delete"),
+                    (MenuAction::CancelDelete, "Cancel"),
+                ] {
+                    glue_button(
+                        row,
+                        art,
+                        f,
+                        action,
+                        label,
+                        140.0,
+                        30.0,
+                        GlueBtnKind::Small,
+                        1.0,
+                    );
+                }
+            });
+        });
     });
 }
 
@@ -771,20 +980,18 @@ fn dials(tower: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
         });
 }
 
-/// The zone list in `CharacterSelectCharacterFrame` (260×642 at TOPRIGHT (-5,-15)), one
-/// character-row per zone, lowest level first.
-/// After a run that changed the profile, the zone list is built again, so a zone just opened
-/// shows open.
-pub(super) fn rebuild_zones(
+/// After a change to the account (a run that opened a zone, a character made, picked or
+/// deleted), the character and zone lists are built again.
+pub(super) fn rebuild_lists(
     mut commands: Commands,
     pages: Query<(Entity, &MenuPage)>,
-    frames: Query<Entity, With<ZoneFrame>>,
+    frames: Query<Entity, Or<(With<ZoneFrame>, With<CharFrame>)>>,
     art: Res<GlueArt>,
     font: Res<HudFont>,
     profile: Res<Profile>,
     mut seen: Local<Option<u32>>,
 ) {
-    let Some((root, _)) = pages.iter().find(|(_, p)| p.0 == MenuStep::Customize) else {
+    let Some((root, _)) = pages.iter().find(|(_, p)| p.0 == MenuStep::Select) else {
         return;
     };
     let built = seen.replace(profile.version);
@@ -794,9 +1001,146 @@ pub(super) fn rebuild_zones(
     for e in &frames {
         commands.entity(e).despawn();
     }
-    commands
-        .entity(root)
-        .with_children(|ui| zone_frame(ui, &art, &font.0, &profile));
+    commands.entity(root).with_children(|ui| {
+        char_frame(ui, &art, &font.0, &profile);
+        zone_frame(ui, &art, &font.0, &profile);
+    });
+}
+
+/// The characters, in a frame like the zones' under the logo on the left: one
+/// `CharacterSelectButton`-style row each, name over race and class, then Create New Character.
+fn char_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>, profile: &Profile) {
+    let px = Val::Px;
+    const TOP: f32 = 40.0;
+    const PITCH: f32 = 37.0;
+    let h = TOP + PITCH * MAX_CHARACTERS as f32 + 48.0;
+    ui.spawn((
+        CharFrame,
+        Interaction::default(),
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(5.0),
+            top: px(128.0),
+            width: px(260.0),
+            height: px(h),
+            ..default()
+        },
+    ))
+    .with_children(|frame| {
+        if let (Some(bg), Some(border)) = (&art.tooltip_bg, &art.name_border) {
+            frame.spawn((
+                tiled_bg_node(bg.clone(), NAME_EDGE, 1.0, FRAME_FILL),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(10.0),
+                    right: px(5.0),
+                    top: px(4.0),
+                    bottom: px(9.0),
+                    ..default()
+                },
+            ));
+            backdrop_border(frame, border, NAME_EDGE, FRAME_BORDER);
+        } else {
+            frame.spawn((BackgroundColor(FRAME_FILL), crate::glue::widgets::overlay()));
+        }
+        let title = format!("Characters {}/{MAX_CHARACTERS}", profile.chars.len());
+        outlined_text(
+            frame,
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(12.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            (),
+            (),
+            GlueText {
+                text: &title,
+                size: 18.0,
+                color: DIM,
+                wrap: false,
+            },
+            f,
+            1.0,
+        );
+        for (i, c) in profile.chars.iter().enumerate() {
+            let node = Node {
+                position_type: PositionType::Absolute,
+                left: px(24.0),
+                top: px(TOP + i as f32 * PITCH),
+                width: px(ROW_W),
+                height: px(ROW_H),
+                ..default()
+            };
+            frame
+                .spawn((MenuAction::Char(i), Button, LockHighlight::default(), node))
+                .with_children(|b| {
+                    if let Some(hi) = &art.select_highlight {
+                        b.spawn((
+                            Hilight,
+                            Visibility::Hidden,
+                            MaterialNode(hi.clone()),
+                            abs(1.0, -20.0, -6.0, ROW_W + 20.0, ROW_H + 12.0),
+                        ));
+                    }
+                    outlined_text(
+                        b,
+                        abs(1.0, 0.0, 2.0, ROW_W, 16.0),
+                        (),
+                        (),
+                        GlueText {
+                            text: &c.name,
+                            size: 15.0,
+                            color: GOLD,
+                            wrap: false,
+                        },
+                        f,
+                        1.0,
+                    );
+                    let class = &data::CLASSES[c.class.min(data::CLASSES.len() - 1)];
+                    let line = match c.wins() {
+                        0 => format!("{} {}", race_name(c.race), class.name),
+                        n => format!("{} {}   {n} won", race_name(c.race), class.name),
+                    };
+                    outlined_text(
+                        b,
+                        abs(1.0, 0.0, 19.0, ROW_W, 14.0),
+                        (),
+                        (),
+                        GlueText {
+                            text: &line,
+                            size: 12.0,
+                            color: rgb(class.color),
+                            wrap: false,
+                        },
+                        f,
+                        1.0,
+                    );
+                });
+        }
+        frame
+            .spawn(Node {
+                position_type: PositionType::Absolute,
+                bottom: px(18.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            })
+            .with_children(|c| {
+                glue_button(
+                    c,
+                    art,
+                    f,
+                    MenuAction::NewChar,
+                    "Create New Character",
+                    196.0,
+                    30.0,
+                    GlueBtnKind::Small,
+                    1.0,
+                );
+            });
+    });
 }
 
 /// The armor worn, slot by slot, over the hero's name.
@@ -804,7 +1148,7 @@ fn armor_strip(ui: &mut ChildSpawnerCommands, f: &Handle<Font>) {
     let px = Val::Px;
     ui.spawn(Node {
         position_type: PositionType::Absolute,
-        bottom: px(132.0),
+        bottom: px(112.0),
         width: Val::Percent(100.0),
         flex_direction: FlexDirection::Column,
         align_items: AlignItems::Center,
@@ -1306,7 +1650,7 @@ pub(super) fn menu_clicks(
     phase: Res<State<Phase>>,
     creatures: Option<Res<crate::entities::Creatures>>,
     char_create: Option<Res<crate::entities::CharCreate>>,
-    profile: Res<Profile>,
+    mut profile: ResMut<Profile>,
     catalog: Res<super::gear::GearCatalog>,
     mut selection: ResMut<Selection>,
     mut run: ResMut<Run>,
@@ -1315,28 +1659,42 @@ pub(super) fn menu_clicks(
     mut exit: MessageWriter<AppExit>,
     mut step: ResMut<MenuStep>,
     keys: Res<ButtonInput<KeyCode>>,
+    (mut draft, mut delete): (ResMut<NameDraft>, ResMut<DeleteOpen>),
 ) {
     if *phase.get() != Phase::Menu {
+        delete.0 = false;
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) && *step == MenuStep::Customize {
-        *step = MenuStep::Hero;
-    }
-    if actions
+    let clicked = actions
         .iter()
-        .any(|(e, a)| *a == MenuAction::Quit && clicks.hit(e))
-    {
+        .find(|(e, _)| clicks.hit(*e))
+        .map(|(_, a)| *a);
+    // While the delete dialog is up only its two buttons answer, and Escape is Cancel.
+    let action = if delete.0 {
+        match clicked {
+            Some(a @ (MenuAction::ConfirmDelete | MenuAction::CancelDelete)) => Some(a),
+            _ if keys.just_pressed(KeyCode::Escape) => Some(MenuAction::CancelDelete),
+            _ => None,
+        }
+    } else if clicked.is_some() {
+        clicked
+    } else if keys.just_pressed(KeyCode::Escape) {
+        match *step {
+            MenuStep::Customize => Some(MenuAction::Back),
+            MenuStep::Hero if profile.hero().is_some() => Some(MenuAction::Cancel),
+            _ => None,
+        }
+    } else if keys.just_pressed(KeyCode::Enter) && *step == MenuStep::Customize {
+        Some(MenuAction::Create)
+    } else {
+        None
+    };
+    let Some(action) = action else { return };
+    if action == MenuAction::Quit {
         exit.write(AppExit::Success);
         return;
     }
     let Some(creatures) = creatures.as_deref() else {
-        return;
-    };
-    let Some(action) = actions
-        .iter()
-        .find(|(e, _)| clicks.hit(*e))
-        .map(|(_, a)| *a)
-    else {
         return;
     };
     let all = all_looks(creatures, char_create.as_deref());
@@ -1350,10 +1708,67 @@ pub(super) fn menu_clicks(
             if selection.map != i && profile.is_open(i) {
                 selection.map = i;
                 selection.version += 1;
+                profile.set_map(i);
+            }
+        }
+        MenuAction::Char(i) => {
+            profile.choose(i);
+            if let Some(hero) = profile.hero() {
+                apply_hero(&mut selection, &all, hero, &profile);
+            }
+        }
+        MenuAction::NewChar => {
+            if profile.chars.len() < MAX_CHARACTERS {
+                *step = MenuStep::Hero;
+                new_name(&mut draft, &selection, &mut rng);
+            }
+        }
+        MenuAction::DeleteChar => delete.0 = profile.hero().is_some(),
+        MenuAction::CancelDelete => delete.0 = false,
+        MenuAction::ConfirmDelete => {
+            delete.0 = false;
+            if let Some(i) = profile.current {
+                profile.delete(i);
+            }
+            match profile.hero() {
+                Some(hero) => apply_hero(&mut selection, &all, hero, &profile),
+                None => {
+                    *step = MenuStep::Hero;
+                    new_name(&mut draft, &selection, &mut rng);
+                }
+            }
+        }
+        // Back to character select, the picked character as they were.
+        MenuAction::Cancel => {
+            if let Some(hero) = profile.hero() {
+                apply_hero(&mut selection, &all, hero, &profile);
+                *step = MenuStep::Select;
+            }
+        }
+        MenuAction::RandomName => new_name(&mut draft, &selection, &mut rng),
+        // Accept: a name the account can take makes the character, picked, in its first starting
+        // zone.
+        MenuAction::Create => {
+            let name = tidy_name(&draft.text);
+            draft.error = profile.refuse(&name);
+            let look = selection.look.and_then(|i| selection.looks.get(i));
+            if let (None, Some(class), Some(&(_, race, sex))) = (draft.error, selection.class, look)
+            {
+                let map = zone_order().first().map_or(0, |z| z.map);
+                let hero = Character::new(name, class, race, sex, selection.custom, map);
+                if profile.create(hero) {
+                    if let Some(hero) = profile.hero() {
+                        apply_hero(&mut selection, &all, hero, &profile);
+                    }
+                    *step = MenuStep::Select;
+                }
             }
         }
         MenuAction::Enter => {
-            if profile.is_open(selection.map) && start_run(&mut run, &mut selection) {
+            if profile.hero().is_some()
+                && profile.is_open(selection.map)
+                && start_run(&mut run, &mut selection)
+            {
                 (run.gear_might, run.gear_hp) =
                     super::gear::bonus(run.class.id, &profile, &catalog);
                 run.hp = run.stats().max_hp;
@@ -1433,7 +1848,6 @@ pub(super) fn menu_clicks(
         }
     }
     clamp_custom(&mut selection, char_create.as_deref());
-    save_pick(&selection);
 }
 
 /// The screen's per-frame state: the locked highlights, hover labels, which races and classes
@@ -1455,10 +1869,12 @@ pub(super) fn refresh_menu_ui(
     mut faces: Query<(&RaceFace, &mut ImageNode)>,
     mut name: Query<(&mut Text, &mut TextColor), (With<PickName>, Without<DialLabel>)>,
     mut dial_labels: Query<(&DialLabel, &mut Text), Without<PickName>>,
-    (char_create, strings): (
+    (char_create, strings, profile): (
         Option<Res<crate::entities::CharCreate>>,
         Option<Res<GlueStrings>>,
+        Res<Profile>,
     ),
+    mut first_quit: Query<&mut Node, With<FirstQuit>>,
     mut cache: Local<(Option<u32>, bool, Vec<Vec<(u32, u8, u8)>>)>,
 ) {
     let have = creatures.is_some() && char_create.is_some();
@@ -1484,12 +1900,20 @@ pub(super) fn refresh_menu_ui(
             MenuAction::Sex(s) => cur.is_some_and(|c| c.1 == s),
             MenuAction::Class(i) => selection.class == Some(i),
             MenuAction::Map(i) => selection.map == i,
+            MenuAction::Char(i) => profile.current == Some(i),
             MenuAction::Dial(..)
             | MenuAction::Randomize
             | MenuAction::Enter
             | MenuAction::Quit
             | MenuAction::Next
-            | MenuAction::Back => false,
+            | MenuAction::Back
+            | MenuAction::NewChar
+            | MenuAction::DeleteChar
+            | MenuAction::ConfirmDelete
+            | MenuAction::CancelDelete
+            | MenuAction::Cancel
+            | MenuAction::Create
+            | MenuAction::RandomName => false,
         };
         if let Some(mut lock) = lock {
             if lock.0 != selected {
@@ -1497,24 +1921,33 @@ pub(super) fn refresh_menu_ui(
             }
         }
         if let Some(mut disabled) = disabled {
-            let off = *action == MenuAction::Enter && cur.is_none();
+            let off = match *action {
+                MenuAction::Enter => cur.is_none() || profile.hero().is_none(),
+                MenuAction::DeleteChar => profile.hero().is_none(),
+                MenuAction::NewChar => profile.chars.len() >= MAX_CHARACTERS,
+                _ => false,
+            };
             if disabled.0 != off {
                 disabled.0 = off;
             }
         }
-        match *action {
+        let shown = match *action {
             MenuAction::Race(r) => {
-                let ok = all.is_empty() || all.iter().any(|l| find(l, Some(r), None).is_some());
-                let want = if ok {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-                if *vis != want {
-                    *vis = want;
-                }
+                Some(all.is_empty() || all.iter().any(|l| find(l, Some(r), None).is_some()))
             }
-            _ => {}
+            // An account with no character has nothing to go back to.
+            MenuAction::Cancel => Some(profile.hero().is_some()),
+            _ => None,
+        };
+        if let Some(ok) = shown {
+            let want = if ok {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if *vis != want {
+                *vis = want;
+            }
         }
         let show = selected || *interaction != Interaction::None || art.races.is_none();
         for child in children {
@@ -1601,8 +2034,20 @@ pub(super) fn refresh_menu_ui(
         }
     }
 
+    // The create screen's Quit stands where Back would, until there is a character.
+    for mut node in &mut first_quit {
+        let want = if profile.hero().is_none() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+    }
+
     let class = selection.class_def();
-    if let Ok((mut t, mut color)) = name.single_mut() {
+    for (mut t, mut color) in &mut name {
         let want = match (class, cur) {
             (Some(c), Some((r, _))) => format!("{} {}", race_name(r), c.name),
             _ => String::new(),
@@ -1618,10 +2063,131 @@ pub(super) fn refresh_menu_ui(
     }
 }
 
-/// Lay out only the current step's page.
-pub(super) fn show_step(step: Res<MenuStep>, mut pages: Query<(&MenuPage, &mut Node)>) {
+/// Character select's name and the delete dialog's question, the create screen's name box (a
+/// caret blinking after the name) and its line, and the dialog shown or not.
+#[allow(clippy::type_complexity)]
+pub(super) fn refresh_chars(
+    time: Res<Time<Real>>,
+    profile: Res<Profile>,
+    draft: Res<NameDraft>,
+    delete: Res<DeleteOpen>,
+    mut texts: ParamSet<(
+        Query<&mut Text, With<HeroName>>,
+        Query<&mut Text, With<DeleteText>>,
+        Query<&mut Text, With<NameText>>,
+        Query<(&mut Text, &mut TextColor), With<NameError>>,
+    )>,
+    mut dialog: Query<&mut Node, With<DeleteDialog>>,
+) {
+    let hero = profile.hero().map_or("", |c| c.name.as_str()).to_string();
+    for mut t in &mut texts.p0() {
+        if t.0 != hero {
+            t.0.clone_from(&hero);
+        }
+    }
+    let ask = format!("Delete {hero}?");
+    for mut t in &mut texts.p1() {
+        if t.0 != ask {
+            t.0 = ask.clone();
+        }
+    }
+    let caret = if time.elapsed_secs().fract() < 0.5 {
+        "|"
+    } else {
+        " "
+    };
+    let typed = format!("{}{caret}", tidy_name(&draft.text));
+    for mut t in &mut texts.p2() {
+        if t.0 != typed {
+            t.0 = typed.clone();
+        }
+    }
+    let (line, color) = match draft.error {
+        Some(why) => (why, Color::srgb(1.0, 0.25, 0.25)),
+        None => ("Type a name, 2 to 12 letters.", DIM),
+    };
+    for (mut t, mut c) in &mut texts.p3() {
+        if t.0 != line {
+            t.0 = line.to_string();
+        }
+        c.0 = color;
+    }
+    for mut node in &mut dialog {
+        let want = if delete.0 {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+    }
+}
+
+/// The name box takes the letters typed on the create screen's second step, and Backspace;
+/// every other key's press is held from the rest of the frame, so typing a G or a C does not
+/// toggle the picture or the camera. Enter and Escape still reach the screen.
+pub(super) fn type_name(
+    phase: Res<State<Phase>>,
+    step: Res<MenuStep>,
+    mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut draft: ResMut<NameDraft>,
+) {
+    if *phase.get() != Phase::Menu || *step != MenuStep::Customize {
+        typed.clear();
+        return;
+    }
+    use bevy::input::keyboard::Key;
+    for k in typed.read() {
+        if !k.state.is_pressed() {
+            continue;
+        }
+        match &k.logical_key {
+            Key::Character(c) => {
+                let letters = c.chars().filter(|c| c.is_alphabetic());
+                if draft.text.chars().count() < super::profile::NAME_MAX {
+                    draft.text.extend(letters);
+                    draft.text = tidy_name(&draft.text);
+                    draft.error = None;
+                }
+            }
+            Key::Backspace => {
+                draft.text.pop();
+                draft.error = None;
+            }
+            _ => {}
+        }
+    }
+    let held: Vec<KeyCode> = keys
+        .get_just_pressed()
+        .filter(|k| !matches!(k, KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape))
+        .copied()
+        .collect();
+    for k in held {
+        keys.clear_just_pressed(k);
+    }
+}
+
+/// Lay out only the current step's page; character select goes while its delete dialog is up.
+pub(super) fn show_step(
+    step: Res<MenuStep>,
+    delete: Res<DeleteOpen>,
+    mut pages: Query<(&MenuPage, &mut Node), Without<super::merchant::MerchantCorner>>,
+    mut merchant: Query<&mut Node, With<super::merchant::MerchantCorner>>,
+) {
+    for mut node in &mut merchant {
+        let want = if *step == MenuStep::Select && !delete.0 {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+    }
     for (page, mut node) in &mut pages {
-        let want = if page.0 == *step {
+        let want = if page.0 == *step && !(delete.0 && page.0 == MenuStep::Select) {
             Display::Flex
         } else {
             Display::None

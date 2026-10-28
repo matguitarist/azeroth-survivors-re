@@ -40,6 +40,9 @@ pub(super) struct Auto {
     zones_left: usize,
     /// `<class>:map`: open the world map 20 seconds in.
     map_shot: bool,
+    /// `<class>:chars`: make three characters, show character select, both create steps and the
+    /// delete dialog, then quit.
+    chars: bool,
     /// Seconds the loading screen has covered the menu, for `:zones`' veil shots.
     veil_t: f32,
     /// `:merchant`: the seconds since the rare elite fell.
@@ -87,6 +90,7 @@ pub(super) fn from_env() -> Option<Auto> {
     let merchant = mode.eq_ignore_ascii_case("merchant");
     let zones = mode.eq_ignore_ascii_case("zones");
     let map_shot = mode.eq_ignore_ascii_case("map");
+    let chars = mode.eq_ignore_ascii_case("chars");
     let class = data::CLASSES
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(name))
@@ -118,6 +122,7 @@ pub(super) fn from_env() -> Option<Auto> {
         merchant,
         zones_left: if zones { data::MAPS.len() } else { 0 },
         map_shot,
+        chars,
         veil_t: 0.0,
         rare_gone: 0.0,
         frames: 0,
@@ -430,7 +435,69 @@ pub(super) fn extra(
     mut map: ResMut<super::worldmap::MapOpen>,
     mut replay: ResMut<super::hud::Replay>,
     mut shown: Local<f32>,
+    (mut profile, selection, mut step, mut delete, mut draft): (
+        ResMut<super::profile::Profile>,
+        Res<super::Selection>,
+        ResMut<super::menu::MenuStep>,
+        ResMut<super::menu::DeleteOpen>,
+        ResMut<super::menu::NameDraft>,
+    ),
+    (mut exit, mut chars_t): (MessageWriter<AppExit>, Local<f32>),
 ) {
+    // A run needs a character to count for: a fresh account gets one, of the class driven.
+    let look = selection.look.and_then(|i| selection.looks.get(i));
+    if let (Phase::Menu, true, Some(class), Some(&(_, race, sex))) =
+        (phase.get(), profile.hero().is_none(), selection.class, look)
+    {
+        let name = format!("Auto{}", ["a", "b", "c", "d"][profile.chars.len().min(3)]);
+        let hero =
+            super::profile::Character::new(name, class, race, sex, selection.custom, auto.map);
+        if profile.create(hero) {
+            info!("survivors auto: created a {}", data::CLASSES[class].name);
+            *step = super::menu::MenuStep::Select;
+        }
+    }
+    if auto.chars && *phase.get() == Phase::Menu && profile.hero().is_some() {
+        // The drive starts its run three seconds into the menu; hold it until the shots are in.
+        auto.wait = 0.0;
+        *chars_t += time.delta_secs();
+        let t = *chars_t;
+        if profile.chars.len() < 3 {
+            let (class, race) = [(4, 4), (3, 6)][profile.chars.len() - 1];
+            let name = ["Ilyandra", "Hautok"][profile.chars.len() - 1].to_string();
+            let hero = super::profile::Character::new(name, class, race, 1, selection.custom, 0);
+            profile.create(hero);
+            profile.choose(0);
+        }
+        let shot = |auto: &mut Auto, commands: &mut Commands, at: f32, name: &str| {
+            if t > at {
+                auto.capture_once(commands, name.into());
+            }
+        };
+        if t > 4.0 && t < 7.0 && *step == super::menu::MenuStep::Select && !delete.0 {
+            shot(&mut auto, &mut commands, 4.0, "chars-select");
+        }
+        if t > 7.0 && t < 10.0 {
+            *step = super::menu::MenuStep::Hero;
+            shot(&mut auto, &mut commands, 9.0, "chars-create");
+        }
+        if t > 10.0 && t < 13.0 {
+            *step = super::menu::MenuStep::Customize;
+            if draft.text.is_empty() {
+                draft.text = "Arthas".into();
+            }
+            shot(&mut auto, &mut commands, 12.0, "chars-name");
+        }
+        if t > 13.0 && t < 16.0 {
+            *step = super::menu::MenuStep::Select;
+            delete.0 = true;
+            shot(&mut auto, &mut commands, 15.0, "chars-delete");
+        }
+        if t > 16.0 {
+            info!("survivors auto: chars shots done");
+            exit.write(AppExit::Success);
+        }
+    }
     if auto.idle && *phase.get() == Phase::GameOver && auto.wait > 3.0 && !replay.0 {
         info!("survivors auto: play again");
         replay.0 = true;
