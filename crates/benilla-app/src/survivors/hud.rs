@@ -1094,6 +1094,8 @@ pub(super) fn start_run(run: &mut Run, selection: &mut Selection) -> bool {
         ranks,
         ..Run::default()
     };
+    run.rerolls = super::merchant::rerolls(&ranks);
+    run.banishes = super::merchant::banishes(&ranks);
     for _ in 0..super::merchant::provisions(&ranks) {
         run.bag.add(super::bag::potion());
     }
@@ -1116,7 +1118,7 @@ fn choices_for(run: &Run, rng: &mut Rng) -> Vec<Choice> {
     }
     if run.abilities.len() < data::MAX_ABILITIES {
         for key in run.class.pool {
-            if !run.abilities.iter().any(|o| o.def.key == *key) {
+            if !run.abilities.iter().any(|o| o.def.key == *key) && !run.banished.contains(key) {
                 pool.push((Choice::NewAbility(data::ability(key)), 1.0));
             }
         }
@@ -1128,7 +1130,7 @@ fn choices_for(run: &Run, rng: &mut Rng) -> Vec<Choice> {
     }
     if run.passives.len() < data::MAX_PASSIVES {
         for p in data::PASSIVES {
-            if !run.passives.iter().any(|(q, _)| q.key == p.key) {
+            if !run.passives.iter().any(|(q, _)| q.key == p.key) && !run.banished.contains(&p.key) {
                 pool.push((Choice::NewPassive(p), 0.5));
             }
         }
@@ -1153,8 +1155,44 @@ fn choices_for(run: &Run, rng: &mut Rng) -> Vec<Choice> {
     out
 }
 
-pub(super) fn roll_offer(run: Res<Run>, mut rng: ResMut<Rng>, mut offer: ResMut<Offer>) {
+pub(super) fn roll_offer(mut run: ResMut<Run>, mut rng: ResMut<Rng>, mut offer: ResMut<Offer>) {
+    run.banishing = false;
     offer.choices = choices_for(&run, &mut rng);
+}
+
+/// A fresh hand, spending a reroll.
+pub(super) fn reroll(run: &mut Run, offer: &mut Offer, rng: &mut Rng) -> bool {
+    if run.rerolls == 0 {
+        return false;
+    }
+    run.rerolls -= 1;
+    run.banishing = false;
+    offer.choices = choices_for(run, rng);
+    true
+}
+
+/// The key a card would strike from the pool: only spells and auras not yet had.
+pub(super) fn banish_key(choice: Choice) -> Option<&'static str> {
+    match choice {
+        Choice::NewAbility(def) => Some(def.key),
+        Choice::NewPassive(p) => Some(p.key),
+        _ => None,
+    }
+}
+
+/// Strike card `i` from the run, spending a banish, and deal again.
+pub(super) fn banish(i: usize, run: &mut Run, offer: &mut Offer, rng: &mut Rng) -> bool {
+    let Some(key) = offer.choices.get(i).copied().and_then(banish_key) else {
+        return false;
+    };
+    if run.banishes == 0 {
+        return false;
+    }
+    run.banishes -= 1;
+    run.banishing = false;
+    run.banished.push(key);
+    offer.choices = choices_for(run, rng);
+    true
 }
 
 pub(super) fn pick(

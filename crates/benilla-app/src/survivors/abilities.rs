@@ -720,9 +720,10 @@ pub(super) fn apply_hits(
                 boss: en.boss,
                 level: en.def.level,
                 big: en.def.big,
+                rare: en.rare,
             });
             run.kills += 1;
-            if en.boss {
+            if en.boss || en.rare {
                 run.banner = Some((format!("{} is slain!", en.def.name), 3.0));
             }
         };

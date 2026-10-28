@@ -25,6 +25,8 @@ pub(super) struct Enemy {
     pub radius: f32,
     pub xp: u32,
     pub boss: bool,
+    /// A rare elite: bigger, much tougher, glowing, and rich ([`RARE_EVERY`]).
+    pub rare: bool,
     pub attack_cd: f32,
     pub slow: f32,
     pub slow_t: f32,
@@ -61,7 +63,12 @@ pub(super) struct Loot {
     /// The creature's level and whether it was a great beast, for the coins and items it drops.
     pub level: u32,
     pub big: bool,
+    pub rare: bool,
 }
+
+/// Seconds between rare elites, and the aura that marks one: Enrage's red glow.
+const RARE_EVERY: (f32, f32) = (75.0, 120.0);
+const RARE_AURA: u32 = 8599;
 
 #[derive(Clone, Copy)]
 pub(super) enum GemKind {
@@ -103,15 +110,17 @@ fn spawn_enemy(
     pos: Vec3,
     hero: Vec3,
     boss: bool,
+    rare: bool,
 ) {
     let scale = data::hp_scale(run.elapsed);
     let serial = run.guid();
+    let size = if rare { 1.5 } else { 1.0 };
     let e = units::spawn_unit(
         commands,
         &UnitSpec {
             serial,
             display: def.display,
-            scale: def.scale,
+            scale: def.scale * size,
             level: def.level,
             faction: units::FACTION_MONSTER,
             bytes0: 1 << 8,
@@ -121,17 +130,22 @@ fn spawn_enemy(
         pos,
         yaw_toward(hero - pos),
     );
-    let hp = def.hp * scale;
+    let hp = def.hp * scale * if rare { 15.0 } else { 1.0 };
+    let mut marks = Marks::debuffs();
+    if rare {
+        marks.add(RARE_AURA, f32::INFINITY);
+    }
     commands.entity(e).insert((
         Enemy {
             def,
             hp,
             max_hp: hp,
-            speed: def.speed,
-            damage: def.damage * data::damage_scale(run.elapsed),
-            radius: radius_for(def),
-            xp: def.xp,
+            speed: def.speed * if rare { 1.1 } else { 1.0 },
+            damage: def.damage * data::damage_scale(run.elapsed) * if rare { 1.8 } else { 1.0 },
+            radius: radius_for(def) * size,
+            xp: def.xp * if rare { 10 } else { 1 },
             boss,
+            rare,
             attack_cd: 0.5,
             slow: 1.0,
             slow_t: 0.0,
@@ -143,7 +157,7 @@ fn spawn_enemy(
             dots: Vec::new(),
             dead: false,
         },
-        Marks::debuffs(),
+        marks,
     ));
 }
 
@@ -183,7 +197,7 @@ pub(super) fn spawn_enemies(
             hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 30.0,
             hpos.y,
         );
-        spawn_enemy(&mut commands, &mut run, def, pos, hpos, true);
+        spawn_enemy(&mut commands, &mut run, def, pos, hpos, true, false);
         run.bosses += 1;
         run.banner = Some((format!("{} approaches!", def.name), 4.0));
     }
@@ -201,9 +215,26 @@ pub(super) fn spawn_enemies(
                 hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 26.0,
                 hpos.y,
             );
-            spawn_enemy(&mut commands, &mut run, def, pos, hpos, false);
+            spawn_enemy(&mut commands, &mut run, def, pos, hpos, false, false);
         }
         run.banner = Some(("They're surrounding you!".into(), 3.0));
+    }
+
+    // Now and then a rare elite of the moment's crowd, announced.
+    if run.next_rare == 0.0 {
+        run.next_rare = rng.range(RARE_EVERY.0, RARE_EVERY.1);
+    }
+    if elapsed >= run.next_rare {
+        run.next_rare = elapsed + rng.range(RARE_EVERY.0, RARE_EVERY.1);
+        let def = &roster.enemies[pool[rng.index(pool.len())]];
+        let a = rng.range(0.0, std::f32::consts::TAU);
+        let pos = ground(
+            &world,
+            hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 28.0,
+            hpos.y,
+        );
+        spawn_enemy(&mut commands, &mut run, def, pos, hpos, false, true);
+        run.banner = Some((format!("A rare {} appears!", def.name), 4.0));
     }
 
     spawner.timer -= time.delta_secs();
@@ -222,7 +253,7 @@ pub(super) fn spawn_enemies(
         let a = rng.range(0.0, std::f32::consts::TAU);
         let r = rng.range(34.0, 42.0);
         let pos = ground(&world, hpos + Vec3::new(a.cos(), 0.0, a.sin()) * r, hpos.y);
-        spawn_enemy(&mut commands, &mut run, def, pos, hpos, false);
+        spawn_enemy(&mut commands, &mut run, def, pos, hpos, false, false);
     }
 }
 

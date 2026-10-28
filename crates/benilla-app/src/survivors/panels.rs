@@ -929,10 +929,12 @@ pub(super) fn bag_input(
     button: Query<Entity, With<super::hud::BackpackButton>>,
     cells: Query<(Entity, &BagCell)>,
     actions: Query<(Entity, &UiAction)>,
+    mut sounds: MessageWriter<crate::sound::GlueSound>,
 ) {
     let pressed = button.iter().any(|e| clicks.hit(e));
     match *phase.get() {
         Phase::Playing if keys.just_pressed(KeyCode::KeyB) || pressed => {
+            sounds.write(crate::sound::GlueSound("igBackPackOpen"));
             open.0 = true;
             next.set(Phase::Paused);
             return;
@@ -942,6 +944,7 @@ pub(super) fn bag_input(
                 .iter()
                 .any(|(e, a)| *a == UiAction::CloseBag && clicks.hit(e));
             if close || keys.just_pressed(KeyCode::KeyB) || keys.just_pressed(KeyCode::Escape) {
+                sounds.write(crate::sound::GlueSound("igBackPackClose"));
                 open.0 = false;
                 next.set(Phase::Playing);
                 return;

@@ -15,6 +15,7 @@ use super::enemies::{Enemy, Loot};
 use super::hero::Hero;
 use super::units::{self, flat, Fx, COLOR_SPELL};
 use super::{Rng, Run, Stats};
+use crate::sound::GlueSound;
 
 /// The backpack's sixteen slots.
 pub(super) const BAG_SLOTS: usize = 16;
@@ -361,6 +362,36 @@ pub(crate) struct Item {
     pub kind: Kind,
     /// The vendor's price, in copper.
     pub sell: u32,
+}
+
+impl Item {
+    /// The SoundEntries kit WoW plays when an item like this goes into the bags.
+    pub(super) fn pickup_sound(&self) -> &'static str {
+        match &self.kind {
+            Kind::Junk => "PickUpCloth_Leather",
+            Kind::Use(u) => match u.effect {
+                Use::Heal(_) | Use::Swift(..) => "PickUpWater_Liquid",
+                Use::Food(..) => "PickUpFoodGeneric",
+                Use::Bomb { .. } => "PickUpMetalSmall",
+            },
+            Kind::Gear { slot, .. } => match slot {
+                GearSlot::Neck | GearSlot::Finger => "PickUpRing",
+                GearSlot::Trinket => "PickupGems",
+                GearSlot::Back => "PickUpCloth_Leather",
+            },
+        }
+    }
+}
+
+impl UseDef {
+    /// The kit played on use; explosives sound through their spell.
+    fn sound(&self) -> Option<&'static str> {
+        match self.effect {
+            Use::Heal(_) | Use::Swift(..) => Some("Drinking"),
+            Use::Food(..) => Some("Item - Eat"),
+            Use::Bomb { .. } => None,
+        }
+    }
 }
 
 impl Item {
@@ -747,10 +778,55 @@ enum Dropped {
     Item(Item),
 }
 
-fn spawn_pickup(commands: &mut Commands, run: &mut Run, pos: Vec3, what: Dropped) {
+/// The light standing over a sack of green or better, and its pool on the ground (the camera looks
+/// down, so the column alone barely shows): unlit and additive, one material per quality.
+pub(super) struct Beams {
+    mesh: Handle<Mesh>,
+    pool: Handle<Mesh>,
+    mats: [Handle<StandardMaterial>; 3],
+}
+
+impl Beams {
+    fn new(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>) -> Self {
+        let mut mat = |q: Quality| {
+            mats.add(StandardMaterial {
+                base_color: q.color().with_alpha(0.55),
+                unlit: true,
+                alpha_mode: AlphaMode::Add,
+                cull_mode: None,
+                ..default()
+            })
+        };
+        Self {
+            mesh: meshes.add(Cylinder::new(0.12, 6.0)),
+            pool: meshes.add(Circle::new(0.9)),
+            mats: [
+                mat(Quality::Uncommon),
+                mat(Quality::Rare),
+                mat(Quality::Epic),
+            ],
+        }
+    }
+
+    fn of(&self, q: Quality) -> Option<Handle<StandardMaterial>> {
+        let i = match q {
+            Quality::Uncommon => 0,
+            Quality::Rare => 1,
+            Quality::Epic => 2,
+            _ => return None,
+        };
+        Some(self.mats[i].clone())
+    }
+}
+
+fn spawn_pickup(commands: &mut Commands, run: &mut Run, beams: &Beams, pos: Vec3, what: Dropped) {
     let (display, scale) = match what {
         Dropped::Coins(_) => (COIN_DISPLAY, 0.7),
         Dropped::Item(_) => (SACK_DISPLAY, 0.6),
+    };
+    let beam = match &what {
+        Dropped::Item(item) => beams.of(item.quality),
+        Dropped::Coins(_) => None,
     };
     let e = units::spawn_object(commands, run.guid(), display, scale, pos + Vec3::Y * 0.2);
     commands.entity(e).insert(Pickup {
@@ -758,6 +834,21 @@ fn spawn_pickup(commands: &mut Commands, run: &mut Run, pos: Vec3, what: Dropped
         pulled: false,
         speed: 6.0,
     });
+    if let Some(mat) = beam {
+        commands.entity(e).with_children(|c| {
+            c.spawn((
+                Mesh3d(beams.mesh.clone()),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_xyz(0.0, 3.0, 0.0),
+            ));
+            c.spawn((
+                Mesh3d(beams.pool.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, -0.1, 0.0)
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            ));
+        });
+    }
 }
 
 /// Coins from one creature in forty, a great beast's more often and richer, a boss's a pile;
@@ -767,12 +858,18 @@ pub(super) fn drop_items(
     mut drops: MessageReader<Loot>,
     mut rng: ResMut<Rng>,
     mut run: ResMut<Run>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut beams: Local<Option<Beams>>,
 ) {
+    let beams = beams.get_or_insert_with(|| Beams::new(&mut meshes, &mut mats));
     // `WOW_SURVIVORS_LOOT=rich`, for testing: twenty times the drops.
     let rich = crate::webenv::var("WOW_SURVIVORS_LOOT").is_some_and(|v| v == "rich");
     for d in drops.read() {
         let (coin_p, coin_x, item_p) = if d.boss {
             (1.0, 25, 1.0)
+        } else if d.rare {
+            (1.0, 8, 1.0)
         } else if d.big {
             (0.12, 3, 0.05)
         } else {
@@ -789,16 +886,22 @@ pub(super) fn drop_items(
             spawn_pickup(
                 &mut commands,
                 &mut run,
+                beams,
                 d.pos - Vec3::X * 0.8,
                 Dropped::Coins(n),
             );
         }
-        let items = if d.boss { 2 } else { 1 };
+        let items = if d.boss || d.rare { 2 } else { 1 };
         for k in 0..items {
             if rng.f32() < item_p {
-                let item = roll_item(d.level, d.boss, d.big, &mut rng);
+                // A rare elite's first drop is always a blue piece.
+                let item = if d.rare && k == 0 {
+                    gear(d.level.max(1), Quality::Rare, &mut rng)
+                } else {
+                    roll_item(d.level, d.boss, d.big || d.rare, &mut rng)
+                };
                 let at = d.pos + Vec3::new(0.0, 0.0, 0.9 + k as f32 * 0.9);
-                spawn_pickup(&mut commands, &mut run, at, Dropped::Item(item));
+                spawn_pickup(&mut commands, &mut run, beams, at, Dropped::Item(item));
             }
         }
     }
@@ -812,6 +915,7 @@ pub(super) fn collect_pickups(
     hero: Query<(Entity, &Transform), (With<Hero>, Without<Pickup>)>,
     mut pickups: Query<(Entity, &mut Transform, &mut Pickup)>,
     mut fx: Fx,
+    mut sounds: MessageWriter<GlueSound>,
 ) {
     let Ok((hero, h)) = hero.single() else { return };
     if run.dead_t.is_some() {
@@ -835,10 +939,15 @@ pub(super) fn collect_pickups(
                     run.bag.copper += u64::from(n);
                     run.bag.version += 1;
                     fx.label(hero, format!("+{}", money(u64::from(n))), 0xFFFF_D100);
+                    sounds.write(GlueSound("LOOTWINDOWCOINSOUND"));
                 }
                 Some(Dropped::Item(item)) => {
                     let name = item.name.clone();
                     let quality = item.quality;
+                    sounds.write(GlueSound(item.pickup_sound()));
+                    if quality >= Quality::Rare {
+                        sounds.write(GlueSound("igQuestListComplete"));
+                    }
                     match run.bag.add(item) {
                         Stowed::Sold(c) => fx.label(
                             hero,
@@ -873,6 +982,7 @@ pub(super) fn use_items(
     enemies: Query<(Entity, &Transform, &Enemy)>,
     mut fx: Fx,
     mut hits: MessageWriter<Hit>,
+    mut sounds: MessageWriter<GlueSound>,
 ) {
     let dt = time.delta_secs();
     let max_hp = run.stats().max_hp;
@@ -913,6 +1023,9 @@ pub(super) fn use_items(
     }
     if !fired.is_empty() {
         run.version += 1;
+    }
+    for s in fired.iter().filter_map(|u| u.sound()) {
+        sounds.write(GlueSound(s));
     }
     let might = run.stats().might * (1.0 + run.level as f32 * 0.15);
     for u in fired {

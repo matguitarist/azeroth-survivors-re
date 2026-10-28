@@ -7,6 +7,7 @@
 mod abilities;
 mod auto;
 mod bag;
+mod levelup;
 mod cards;
 mod data;
 mod enemies;
@@ -66,6 +67,14 @@ impl Plugin for SurvivorsPlugin {
                 (merchant::build_merchant, merchant::merchant)
                     .chain()
                     .after(menu::build_menu)
+                    .before(crate::glue::GlueVisuals),
+            )
+            .add_systems(
+                Update,
+                (levelup::build_levelup, levelup::levelup)
+                    .chain()
+                    .after(panels::build_panels)
+                    .before(cards::choose_card)
                     .before(crate::glue::GlueVisuals),
             )
             .add_systems(Update, panels::keep_camera.after(WorldStage::Input))
@@ -345,6 +354,15 @@ pub(super) struct Run {
     pub earned: u64,
     /// The merchant's upgrades, as bought when the run began.
     pub ranks: merchant::Ranks,
+    /// The run time the next rare elite shows; 0 until the first is rolled.
+    pub next_rare: f32,
+    /// Level-up rerolls and banishes left, from the merchant's Fortune and Banishment.
+    pub rerolls: u8,
+    pub banishes: u8,
+    /// The spells and auras banished: they are offered no more this run.
+    pub banished: Vec<&'static str>,
+    /// The next card picked is banished rather than taken.
+    pub banishing: bool,
 }
 
 impl Default for Run {
@@ -385,6 +403,11 @@ impl Default for Run {
             bag: bag::Bag::default(),
             earned: 0,
             ranks: [0; merchant::UPGRADES.len()],
+            next_rare: 0.0,
+            rerolls: 0,
+            banishes: 0,
+            banished: Vec::new(),
+            banishing: false,
         }
     }
 }

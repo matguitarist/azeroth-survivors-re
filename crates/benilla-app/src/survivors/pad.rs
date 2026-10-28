@@ -166,6 +166,8 @@ fn keys_for(phase: Phase, button: GamepadButton) -> &'static [KeyCode] {
         (Phase::LevelUp, B::West) => &[KeyCode::Digit1],
         (Phase::LevelUp, B::North) => &[KeyCode::Digit2],
         (Phase::LevelUp, B::East) => &[KeyCode::Digit3],
+        (Phase::LevelUp, B::LeftTrigger) => &[KeyCode::KeyR],
+        (Phase::LevelUp, B::RightTrigger) => &[KeyCode::KeyT],
         _ => &[],
     }
 }
@@ -298,7 +300,8 @@ mod tests {
         assert!(keys_for(Phase::Menu, B::South).is_empty());
         assert_eq!(keys_for(Phase::LevelUp, B::North), &[KeyCode::Digit2]);
         assert_eq!(keys_for(Phase::Paused, B::East), &[KeyCode::Escape]);
-        // The movement spell is not cast from the cards.
-        assert!(keys_for(Phase::LevelUp, B::RightTrigger).is_empty());
+        // The bumpers reroll and banish there, rather than cast the movement spell.
+        assert_eq!(keys_for(Phase::LevelUp, B::LeftTrigger), &[KeyCode::KeyR]);
+        assert_eq!(keys_for(Phase::LevelUp, B::RightTrigger), &[KeyCode::KeyT]);
     }
 }

@@ -35,6 +35,8 @@ pub(super) struct Auto {
     bag: bool,
     /// `<class>:merchant`: show the merchant before the run.
     merchant: bool,
+    /// `:merchant`: the seconds since the rare elite fell.
+    rare_gone: f32,
     frames: u32,
     wait: f32,
     shots: Option<std::path::PathBuf>,
@@ -105,6 +107,7 @@ pub(super) fn from_env() -> Option<Auto> {
         settings,
         bag,
         merchant,
+        rare_gone: 0.0,
         frames: 0,
         wait: 0.0,
         shots,
@@ -178,8 +181,8 @@ pub(super) fn drive(
     mut offer: ResMut<Offer>,
     mut rng: ResMut<Rng>,
     loading: Res<crate::loading_screen::LoadingScreen>,
-    heroes: Query<(), With<Hero>>,
-    enemies: Query<&Enemy>,
+    heroes: Query<&Transform, With<Hero>>,
+    enemies: Query<(&Enemy, &Transform), Without<Hero>>,
     mut open: ResMut<super::panels::SettingsOpen>,
     mut tab: ResMut<super::panels::Tab>,
     mut bag: ResMut<super::panels::BagOpen>,
@@ -243,6 +246,21 @@ pub(super) fn drive(
             }
         }
         Phase::LevelUp => {
+            // `:merchant` shows the bought charges: at level 3 a banish armed, then spent.
+            if auto.merchant && run.level == 3 && auto.wait > 0.5 && run.banishes > 0 {
+                run.banishing = true;
+            }
+            if auto.merchant && run.level == 3 && auto.wait > 1.0 && run.banishing {
+                auto.capture_once(&mut commands, "banish".into());
+            }
+            if auto.merchant && run.level == 3 && auto.wait > 1.5 && run.banishing {
+                let i = (0..offer.len()).find(|&i| hud::banish_key(offer.choices()[i]).is_some());
+                if let Some(i) = i {
+                    let key = hud::banish_key(offer.choices()[i]);
+                    hud::banish(i, &mut run, &mut offer, &mut rng);
+                    info!("survivors auto: banished {key:?}, {} left", run.banishes);
+                }
+            }
             // After the deal-in, so the shot shows the cards settled.
             if auto.wait > 1.2 && (run.level <= 3 || run.level == 10) {
                 auto.capture_once(&mut commands, format!("levelup-{}", run.level));
@@ -268,6 +286,27 @@ pub(super) fn drive(
                 next.set(Phase::Paused);
                 open.0 = true;
                 auto.wait = 0.0;
+            }
+        }
+        // `:merchant` calls a rare elite early, and shows it.
+        Phase::Playing if auto.merchant => {
+            auto.wait = 0.0;
+            if run.next_rare == 0.0 {
+                run.next_rare = 6.0;
+            }
+            let hero = heroes.single().map(|t| t.translation).unwrap_or_default();
+            let rare = enemies.iter().find(|(e, _)| e.rare);
+            // Close up while it lives; the frame after it falls, its drop under a blue beam.
+            if let Some((e, t)) = rare {
+                if !e.dead && t.translation.distance(hero) < 12.0 {
+                    auto.capture_once(&mut commands, "rare".into());
+                }
+                if e.dead {
+                    auto.rare_gone += dt;
+                    if auto.rare_gone > 0.05 {
+                        auto.capture_once(&mut commands, "rare-slain".into());
+                    }
+                }
             }
         }
         Phase::Playing if auto.bag => {
@@ -314,7 +353,7 @@ pub(super) fn drive(
         auto.log_t = 10.0;
         let fps = auto.frames as f32 / 10.0;
         auto.frames = 0;
-        let alive = enemies.iter().filter(|e| !e.dead).count();
+        let alive = enemies.iter().filter(|(e, _)| !e.dead).count();
         let build: Vec<String> = run
             .abilities
             .iter()

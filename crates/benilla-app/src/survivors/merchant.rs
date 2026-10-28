@@ -23,6 +23,10 @@ pub(super) enum Boon {
     Greed(f32),
     /// Minor Healing Potions in the bag at the start of a run.
     Provisions,
+    /// A fresh hand of level-up cards, once a run per rank.
+    Reroll,
+    /// A level-up card struck from the run's pool, once a run per rank.
+    Banish,
 }
 
 pub(super) struct Upgrade {
@@ -54,7 +58,7 @@ const fn stat(
     }
 }
 
-pub(super) const UPGRADES: [Upgrade; 12] = [
+pub(super) const UPGRADES: [Upgrade; 14] = [
     stat("might", "Might", Stat::Might, 0.05, 5, 2_000),
     stat("fortitude", "Fortitude", Stat::MaxHp, 0.08, 5, 2_000),
     stat("swiftness", "Swiftness", Stat::Speed, 0.04, 5, 2_500),
@@ -80,6 +84,22 @@ pub(super) const UPGRADES: [Upgrade; 12] = [
         ranks: 3,
         base: 1_500,
         art: Some("Interface\\Icons\\INV_Potion_49"),
+    },
+    Upgrade {
+        key: "reroll",
+        name: "Fortune",
+        boon: Boon::Reroll,
+        ranks: 3,
+        base: 3_000,
+        art: Some("Interface\\Icons\\INV_Misc_Ticket_Tarot_Stack_01"),
+    },
+    Upgrade {
+        key: "banish",
+        name: "Banishment",
+        boon: Boon::Banish,
+        ranks: 3,
+        base: 4_000,
+        art: Some("Interface\\Icons\\Spell_Holy_DispelMagic"),
     },
 ];
 
@@ -109,6 +129,8 @@ impl Upgrade {
             Boon::Stat(s, per) => super::bag::stat_line(s, per * f32::from(rank)),
             Boon::Greed(per) => format!("+{:.0}% Coins", per * 100.0 * f32::from(rank)),
             Boon::Provisions => format!("{rank} Minor Healing Potions to start"),
+            Boon::Reroll => format!("{rank} level-up rerolls a run"),
+            Boon::Banish => format!("{rank} level-up banishes a run"),
         }
     }
 }
@@ -141,14 +163,29 @@ pub(super) fn greed(ranks: &Ranks) -> f32 {
         + 1.0
 }
 
-/// How many potions [`Boon::Provisions`] starts a run with.
-pub(super) fn provisions(ranks: &Ranks) -> u8 {
+/// The ranks of the upgrades `boon` matches: one potion, reroll or banish a run each.
+fn count(ranks: &Ranks, boon: impl Fn(Boon) -> bool) -> u8 {
     UPGRADES
         .iter()
         .zip(ranks)
-        .filter(|(u, _)| matches!(u.boon, Boon::Provisions))
+        .filter(|(u, _)| boon(u.boon))
         .map(|(_, &r)| r)
         .sum()
+}
+
+/// How many potions [`Boon::Provisions`] starts a run with.
+pub(super) fn provisions(ranks: &Ranks) -> u8 {
+    count(ranks, |b| matches!(b, Boon::Provisions))
+}
+
+/// The level-up rerolls [`Boon::Reroll`] gives a run.
+pub(super) fn rerolls(ranks: &Ranks) -> u8 {
+    count(ranks, |b| matches!(b, Boon::Reroll))
+}
+
+/// The level-up banishes [`Boon::Banish`] gives a run.
+pub(super) fn banishes(ranks: &Ranks) -> u8 {
+    count(ranks, |b| matches!(b, Boon::Banish))
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
@@ -371,11 +408,13 @@ pub(super) fn merchant(
         Query<(&WareEffect, &mut Text)>,
         Query<(&WarePrice, &mut Text, &mut TextColor)>,
     )>,
+    mut sounds: MessageWriter<crate::sound::GlueSound>,
 ) {
     if *phase.get() != Phase::Menu {
         open.0 = false;
         return;
     }
+    let was = open.0;
     for (e, a) in &actions {
         if clicks.hit(e) {
             open.0 = *a == MerchantAction::Open;
@@ -383,6 +422,13 @@ pub(super) fn merchant(
     }
     if open.0 && keys.just_pressed(KeyCode::Escape) {
         open.0 = false;
+    }
+    if open.0 != was {
+        sounds.write(crate::sound::GlueSound(if open.0 {
+            "igMainMenuOpen"
+        } else {
+            "igMainMenuClose"
+        }));
     }
     for mut node in &mut overlay {
         let want = if open.0 { Display::Flex } else { Display::None };
@@ -392,8 +438,8 @@ pub(super) fn merchant(
     }
     if open.0 {
         for (e, &Ware(i), _, _) in &wares {
-            if clicks.hit(e) {
-                profile.buy(i);
+            if clicks.hit(e) && profile.buy(i) {
+                sounds.write(crate::sound::GlueSound("LOOTWINDOWCOINSOUND"));
             }
         }
     }
@@ -484,5 +530,33 @@ mod tests {
         assert!((s.might - before - 0.10).abs() < 1e-6);
         assert!((greed(&ranks) - 1.3).abs() < 1e-6);
         assert_eq!(provisions(&ranks), 1);
+    }
+
+    #[test]
+    fn a_banished_card_is_offered_no_more() {
+        use super::super::hud::{self, Offer};
+        let mut ranks: Ranks = [0; UPGRADES.len()];
+        ranks[index("reroll").unwrap()] = 2;
+        ranks[index("banish").unwrap()] = 3;
+        let mut run = Run {
+            rerolls: rerolls(&ranks),
+            banishes: banishes(&ranks),
+            ..Run::default()
+        };
+        let mut rng = super::super::Rng::default();
+        let mut offer = Offer::default();
+        assert!(hud::reroll(&mut run, &mut offer, &mut rng));
+        assert_eq!(run.rerolls, 1);
+        let i = (0..offer.len())
+            .find(|&i| hud::banish_key(offer.choices()[i]).is_some())
+            .expect("a new run is offered new spells");
+        let key = hud::banish_key(offer.choices()[i]).unwrap();
+        assert!(hud::banish(i, &mut run, &mut offer, &mut rng));
+        assert_eq!(run.banishes, 2);
+        for _ in 0..50 {
+            hud::reroll(&mut run, &mut offer, &mut rng);
+            run.rerolls = 1;
+            assert!(offer.choices().iter().all(|&c| hud::banish_key(c) != Some(key)));
+        }
     }
 }
