@@ -817,7 +817,7 @@ pub(super) fn setup_hud(
             ));
             root.spawn(centered(
                 f,
-                "Click a card, press 1, 2 or 3, or X, Y or B on a controller",
+                "Click a card or press 1, 2 or 3; on a controller, the D-pad and A, or X, Y or B",
                 14.0,
                 DIM,
             ));

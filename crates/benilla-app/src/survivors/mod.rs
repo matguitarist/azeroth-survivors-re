@@ -60,6 +60,14 @@ impl Plugin for SurvivorsPlugin {
             .add_systems(Update, panels::keep_camera.after(WorldStage::Input))
             .init_resource::<pad::Pad>()
             .add_systems(PreUpdate, pad::read_pad.after(bevy::input::InputSystems))
+            .init_resource::<pad::PadFocus>()
+            .add_systems(
+                PreUpdate,
+                pad::focus
+                    .after(pad::read_pad)
+                    .after(bevy::ui::UiSystems::Focus)
+                    .before(crate::glue::glue_clicks),
+            )
             .add_systems(Update, pad::log_pads)
             .add_systems(
                 Update,
