@@ -52,17 +52,13 @@ minutes. **No server, no login, no account** — fully offline and self-containe
 ```bash
 git clone https://github.com/OutThisLife/azeroth-survivors-re
 cd azeroth-survivors-re
-make build     # fetch game data + install toolchain + build the wasm (~5.5 GB download)
-make start     # → open http://127.0.0.1:8090/
+make native    # fetch game data (~5.5 GB download), build and run the game
 ```
 
-`make build` chains three re-runnable scripts, each skipping what's already done:
-
-| Step | What it does |
-| --- | --- |
-| `scripts/fetch-data.sh` | downloads the WoW 1.12.1 client and extracts its MPQs |
-| `scripts/web-setup.sh` | installs the wasm toolchain (wasi-sdk, wasm-bindgen, binaryen) |
-| `scripts/web-build.sh` | builds the client into `web/dist/` |
+`make native` first runs `scripts/fetch-data.sh`, which downloads the WoW 1.12.1 client and
+extracts its MPQs (re-runnable, skips what's already done), then builds and starts the native
+game. `make build` does the same without starting it. This build is native only; to play in the
+browser, use the original at [wow.aethus.pl](https://wow.aethus.pl/).
 
 **Prerequisites:** [Rust](https://rustup.rs/), `make`, `curl`, `unzip`, and a bash shell. On Windows, run everything from Git Bash; PowerShell and cmd can't run the scripts.
 
@@ -86,7 +82,7 @@ to pause, **1/2/3** to pick a level-up card.
 This repo ships **no Blizzard content** — no art, models, sounds, maps, MPQ contents, or
 FrameXML. The game reads a WoW 1.12.1 client's `Data` folder at runtime, which you supply.
 
-`make build` (via `scripts/fetch-data.sh`) downloads the **English WoW 1.12.1 (build 5875)**
+`make fetch-data` (`scripts/fetch-data.sh`) downloads the **English WoW 1.12.1 (build 5875)**
 client from [archive.org](https://archive.org/details/WoW_1.12.1-5875) (~5.5 GB) and extracts the
 MPQs into `wow-data/Data/` (git-ignored, resumable, skipped when already present). Or point at a
 client you already have with `--data` / `WOW_DATA`.
@@ -97,7 +93,7 @@ If the archive.org item moves or you have your own mirror, override the URL with
 anything:
 
 ```bash
-make build WOW_DATA_URL=https://your-mirror.example/client.zip
+make fetch-data WOW_DATA_URL=https://your-mirror.example/client.zip
 ```
 
 Or set it permanently by editing the single clearly-marked `DEFAULT_DATA_URL` line at the top of
@@ -109,8 +105,8 @@ Or set it permanently by editing the single clearly-marked `DEFAULT_DATA_URL` li
 The survivors mode is `crates/benilla-app/src/survivors/`, running on two upstream projects:
 
 - [benilla](https://github.com/samwhosung/benilla) — a from-scratch WoW 1.12.1 client.
-- [wenilla](https://github.com/Arnesen/wenilla) — benilla compiled to WebAssembly, with a local
-  host and realm service.
+- [wenilla](https://github.com/Arnesen/wenilla) — benilla compiled to WebAssembly. This build
+  keeps wenilla's engine fixes but not its browser build, host or page.
 
 ## Legal
 
