@@ -99,6 +99,23 @@ pub(super) struct AbilitySweep {
 /// The class mobility's action button, bottom centre over the XP bar; shown once it is learned.
 #[derive(Component)]
 pub(super) struct MobilitySlot;
+
+/// The item bar's `n`th socket, over the action bar's left end, and its cooldown sweep.
+#[derive(Component)]
+pub(super) struct QuickSlot(usize);
+#[derive(Component)]
+pub(super) struct QuickSweep(usize, Handle<SweepUiMaterial>);
+
+/// The backpack button, in the bar's backpack socket.
+#[derive(Component)]
+pub(super) struct BackpackButton;
+
+/// The money frame over the bar's right end: the gold, silver and copper counts, each with its
+/// coin.
+#[derive(Component)]
+pub(super) struct MoneyCoin(u8);
+#[derive(Component)]
+pub(super) struct MoneyText(u8);
 #[derive(Component)]
 pub(super) struct MobilityIcon;
 #[derive(Component)]
@@ -156,6 +173,11 @@ pub(super) enum TipFor {
     Mobility,
     /// The run's `n`th armor drop.
     Loot(usize),
+    /// The item bar's `n`th socket.
+    Quick(usize),
+    /// A backpack cell.
+    Bag(super::panels::BagCell),
+    Backpack,
 }
 
 /// The one `GameTooltip`, and the column its lines go in.
@@ -174,6 +196,8 @@ pub(super) enum UiAction {
     Done,
     /// One of Settings' tabs.
     Tab(u8),
+    /// The backpack's Close.
+    CloseBag,
 }
 
 #[derive(Clone, Copy)]
@@ -268,7 +292,18 @@ fn icon(spell: u32, size: f32) -> impl Bundle {
 /// its frame.
 const SLOT: f32 = 36.0;
 
+/// The item bar's bottom, over the experience bar (40 up, 13 tall).
+const ITEM_BAR_BOTTOM: f32 = 57.0;
+
 fn quickslot_frame() -> impl Bundle {
+    socket_art(UiArt::crop(
+        "Interface\\Buttons\\UI-Quickslot2",
+        [0.0, 1.0, 0.0, 1.0],
+    ))
+}
+
+/// A 66-unit button art centred on a 36-unit slot, as `UI-Quickslot2` sits.
+fn socket_art(art: UiArt) -> impl Bundle {
     (
         Node {
             position_type: PositionType::Absolute,
@@ -282,16 +317,17 @@ fn quickslot_frame() -> impl Bundle {
             color: Color::NONE,
             ..default()
         },
-        UiArt::crop("Interface\\Buttons\\UI-Quickslot2", [0.0, 1.0, 0.0, 1.0]),
+        art,
         bevy::ui::FocusPolicy::Pass,
     )
 }
 
 /// `MainMenuBar`, 1024×53 at BOTTOM: `MainMenuBarTexture0`..`3` (256×43 each, at −384, −128, 128
 /// and 384 from the centre), the gryphon end caps (128×128 at ±544), the twelve action buttons
-/// from BOTTOMLEFT (8,4) six apart, and the mobility spell in the backpack's socket at
-/// BOTTOMRIGHT (−6,2). With no micro menu or bags, their recess carries the run's pace and the
-/// four bag sockets (each 5 left of the next, 37 wide) the armor it has dropped.
+/// from BOTTOMLEFT (8,4) six apart, and the backpack at BOTTOMRIGHT (−6,2). With no micro menu
+/// or bags, their recess carries the run's pace and the four bag sockets (each 5 left of the
+/// next, 37 wide) the armor it has dropped. Over the experience bar, as `MultiBarBottomLeft`
+/// sits, a short bar holds the mobility spell and the items to use; the money frame faces it.
 fn action_bar(
     root: &mut ChildSpawnerCommands,
     f: &Handle<Font>,
@@ -396,12 +432,115 @@ fn action_bar(
                 },
             ));
         }
+        for k in 0..super::bag::QUICK_SLOTS {
+            let handle = sweeps.add(SweepUiMaterial { sweep: 0.0 });
+            bar.spawn((
+                QuickSlot(k),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(8.0 + (k + 1) as f32 * (SLOT + 6.0)),
+                    bottom: Val::Px(ITEM_BAR_BOTTOM),
+                    width: Val::Px(SLOT),
+                    height: Val::Px(SLOT),
+                    ..default()
+                },
+                Interaction::default(),
+                TipFor::Quick(k),
+            ))
+            .with_children(|slot| {
+                // `UI-Quickslot`, an empty action button's socket, under the item.
+                slot.spawn((
+                    socket_art(UiArt::tinted(
+                        "Interface\\Buttons\\UI-Quickslot",
+                        Color::srgba(0.35, 0.35, 0.35, 0.8),
+                    )),
+                    ZIndex(-1),
+                ));
+                slot.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    MaterialNode(handle.clone()),
+                    QuickSweep(k, handle),
+                    ZIndex(1),
+                ));
+                slot.spawn((quickslot_frame(), ZIndex(2)));
+                slot.spawn((hotkey(f, &(k + 1).to_string()), ZIndex(3)));
+            });
+        }
         bar.spawn((
-            MobilitySlot,
+            BackpackButton,
+            Button,
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(6.0),
                 bottom: Val::Px(2.0),
+                width: Val::Px(SLOT),
+                height: Val::Px(SLOT),
+                ..default()
+            },
+            Interaction::default(),
+            TipFor::Backpack,
+        ))
+        .with_children(|slot| {
+            slot.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                ImageNode {
+                    color: Color::NONE,
+                    ..default()
+                },
+                UiArt::crop(
+                    "Interface\\Buttons\\Button-Backpack-Up",
+                    [0.0, 1.0, 0.0, 1.0],
+                ),
+            ));
+            slot.spawn(quickslot_frame());
+            slot.spawn(hotkey(f, "B"));
+        });
+        bar.spawn(Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(12.0),
+            bottom: Val::Px(ITEM_BAR_BOTTOM + 4.0),
+            column_gap: Val::Px(2.0),
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(|row| {
+            for k in 0..3u8 {
+                let l = 0.25 * f32::from(k);
+                row.spawn((MoneyText(k), text(f, String::new(), 13.0, Color::WHITE)));
+                row.spawn((
+                    MoneyCoin(k),
+                    Node {
+                        width: Val::Px(13.0),
+                        height: Val::Px(13.0),
+                        margin: UiRect::right(Val::Px(4.0)),
+                        ..default()
+                    },
+                    ImageNode {
+                        color: Color::NONE,
+                        ..default()
+                    },
+                    UiArt::crop(
+                        "Interface\\MoneyFrame\\UI-MoneyIcons",
+                        [l, l + 0.25, 0.0, 1.0],
+                    ),
+                ));
+            }
+        });
+        bar.spawn((
+            MobilitySlot,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(8.0),
+                bottom: Val::Px(ITEM_BAR_BOTTOM),
                 width: Val::Px(SLOT),
                 height: Val::Px(SLOT),
                 display: Display::None,
@@ -1078,6 +1217,7 @@ pub(super) fn keys(
     mut run: ResMut<Run>,
     mut next: ResMut<NextState<Phase>>,
     mut settings: ResMut<super::panels::SettingsOpen>,
+    bag: Res<super::panels::BagOpen>,
 ) {
     match phase.get() {
         Phase::Menu => {
@@ -1092,7 +1232,8 @@ pub(super) fn keys(
         }
         // Escape closes Settings first, then the pause menu.
         Phase::Paused => {
-            if keys.just_pressed(KeyCode::Escape) {
+            // The backpack's own Escape is [`super::panels::bag_input`]'s.
+            if keys.just_pressed(KeyCode::Escape) && !bag.0 {
                 if settings.0 {
                     settings.0 = false;
                 } else {
@@ -1392,6 +1533,136 @@ pub(super) fn refresh_hud(
     }
 }
 
+/// An item's icon, `Interface\Icons\<name>`.
+pub(super) fn item_icon(
+    assets: &mut benilla_assets::WorldAssets,
+    images: &mut Assets<Image>,
+    icon: &str,
+) -> Option<Handle<Image>> {
+    assets.sprite_texture(&format!("Interface\\Icons\\{icon}.blp"), images)
+}
+
+/// An item's icon and stack count, filling a 36-unit socket.
+pub(super) fn item_face(
+    b: &mut ChildSpawnerCommands,
+    f: &Handle<Font>,
+    icon: Option<Handle<Image>>,
+    count: u32,
+) {
+    if let Some(icon) = icon {
+        b.spawn((
+            ImageNode::new(icon),
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            bevy::ui::FocusPolicy::Pass,
+        ));
+    }
+    if count > 1 {
+        b.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(2.0),
+                bottom: Val::Px(2.0),
+                ..default()
+            },
+            ZIndex(4),
+        ))
+        .with_children(|n| {
+            n.spawn(text(f, count.to_string(), 12.0, Color::WHITE));
+        });
+    }
+}
+
+/// The item bar's icons when the bag changes, their cooldown sweeps, and the money frame.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(super) fn refresh_items(
+    mut commands: Commands,
+    run: Res<Run>,
+    font: Res<HudFont>,
+    slots: Query<(Entity, &QuickSlot)>,
+    faces: Query<(Entity, &ChildOf), With<QuickFace>>,
+    sweeps: Query<&QuickSweep>,
+    mut mats: ResMut<Assets<SweepUiMaterial>>,
+    mut money: ParamSet<(
+        Query<(&MoneyText, &mut Text, &mut Node)>,
+        Query<(&MoneyCoin, &mut Node)>,
+    )>,
+    mut assets: Option<ResMut<benilla_assets::WorldAssets>>,
+    mut images: ResMut<Assets<Image>>,
+    mut shown: Local<Option<u32>>,
+) {
+    let quick = run.bag.quick();
+    for s in &sweeps {
+        let f = quick.get(s.0).map_or(0.0, |&i| {
+            let (left, full) = run.bag.cooldown(i);
+            (left / full.max(0.01)).clamp(0.0, 1.0)
+        });
+        if let Some(m) = mats.get_mut(&s.1) {
+            if m.sweep != f {
+                m.sweep = f;
+            }
+        }
+    }
+    let c = run.bag.copper;
+    let coins = [c / 10_000, c / 100 % 100, c % 100];
+    // Leading empty coins hide, as the money frame's do; copper always shows.
+    let first = coins.iter().position(|&n| n > 0).unwrap_or(2);
+    let display = |k: u8| {
+        if usize::from(k) >= first {
+            Display::Flex
+        } else {
+            Display::None
+        }
+    };
+    for (k, mut t, mut node) in &mut money.p0() {
+        let want = coins[usize::from(k.0)].to_string();
+        if t.0 != want {
+            t.0 = want;
+        }
+        node.display = display(k.0);
+    }
+    for (k, mut node) in &mut money.p1() {
+        node.display = display(k.0);
+    }
+    if *shown == Some(run.bag.version) {
+        return;
+    }
+    let Some(assets) = assets.as_deref_mut() else {
+        return;
+    };
+    *shown = Some(run.bag.version);
+    for (e, _) in &faces {
+        commands.entity(e).despawn();
+    }
+    for (slot, &QuickSlot(k)) in &slots {
+        let Some((item, count)) = quick.get(k).map(|&i| &run.bag.slots[i]) else {
+            continue;
+        };
+        let icon = item_icon(assets, &mut images, item.icon);
+        let face = commands
+            .spawn((
+                QuickFace,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                bevy::ui::FocusPolicy::Pass,
+            ))
+            .with_children(|b| item_face(b, &font.0, icon, *count))
+            .id();
+        commands.entity(slot).add_child(face);
+    }
+}
+
+#[derive(Component)]
+pub(super) struct QuickFace;
+
 /// Fill icon slots from `SpellIcon.dbc` once the client data and the asset reader are up.
 pub(super) fn fill_icons(
     mut commands: Commands,
@@ -1665,6 +1936,70 @@ impl TipLine {
     }
 }
 
+/// An item's tooltip: its name in its quality's colour, its slot, what it does and its price.
+fn item_lines(item: &super::bag::Item, count: u32) -> Vec<TipLine> {
+    use super::bag::{Kind, Use};
+    let mut lines = vec![TipLine::new(item.name.clone(), item.quality.color()).header()];
+    let green = Color::srgb_u8(30, 255, 0);
+    match &item.kind {
+        Kind::Junk => {}
+        Kind::Gear { slot, stats } => {
+            lines.push(TipLine::new(slot.name(), Color::WHITE));
+            for &(stat, v) in stats {
+                lines.push(TipLine::new(super::bag::stat_line(stat, v), Color::WHITE));
+            }
+        }
+        Kind::Use(u) => {
+            let what = match u.effect {
+                Use::Heal(f) => format!("Use: Restores {:.0}% of your health.", f * 100.0),
+                Use::Food(f, t) => format!(
+                    "Use: Restores {:.0}% of your health over {t:.0} sec.",
+                    f * t * 100.0
+                ),
+                Use::Swift(b, t) => {
+                    format!("Use: Increases run speed by {:.0}% for {t:.0} sec.", b * 100.0)
+                }
+                Use::Bomb { on_self: true, .. } => {
+                    "Use: Blows up everything around you.".to_string()
+                }
+                Use::Bomb { stun, .. } if stun > 0.0 => format!(
+                    "Use: Thrown at the nearest enemy, wounding and stunning those near it for {stun:.0} sec."
+                ),
+                Use::Bomb { .. } => {
+                    "Use: Thrown at the nearest enemy, wounding those near it.".to_string()
+                }
+            };
+            lines.push(TipLine::new(what, green));
+            lines.push(TipLine::new(
+                format!("{} sec cooldown", num(u.cooldown)),
+                Color::WHITE,
+            ));
+        }
+    }
+    let price = u64::from(item.sell) * u64::from(count.max(1));
+    lines.push(TipLine::new(
+        format!("Sell Price: {}", super::bag::money(price)),
+        Color::WHITE,
+    ));
+    lines
+}
+
+fn item_tip(bag: &super::bag::Bag, i: usize, key: Option<usize>) -> Vec<TipLine> {
+    let (item, count) = &bag.slots[i];
+    let mut lines = item_lines(item, *count);
+    if *count > 1 {
+        lines.insert(1, TipLine::new(format!("{count} in the bag"), TIP_GREY));
+    }
+    let hint = match (&item.kind, key) {
+        (super::bag::Kind::Use(_), Some(k)) => format!("Press {k}"),
+        (super::bag::Kind::Use(_), None) => "Click to use.".to_string(),
+        (super::bag::Kind::Gear { .. }, _) => "Click to wear it.".to_string(),
+        (super::bag::Kind::Junk, _) => "Sold when the run ends.".to_string(),
+    };
+    lines.push(TipLine::new(hint, GOLD));
+    lines
+}
+
 /// A number as the tooltips print it: whole when near enough, else to one decimal.
 
 /// The results screen's tiles and its line under the title.
@@ -1692,6 +2027,16 @@ pub(super) fn refresh_results(
     } else {
         let names: Vec<&str> = run.loot.iter().map(|p| p.name.as_str()).collect();
         format!("{stats_line}  Loot: {}.", names.join(", "))
+    };
+    let stats_line = if run.earned > 0 {
+        format!(
+            "{stats_line}  Earned {} (looted {}, the bag sold for {}).",
+            super::bag::money(run.earned),
+            super::bag::money(run.bag.copper),
+            super::bag::money(run.earned - run.bag.copper)
+        )
+    } else {
+        stats_line
     };
     let values = [
         format!("{:02}:{:02}", secs / 60, secs % 60),
@@ -2167,6 +2512,37 @@ pub(super) fn icon_tooltip(
                 TipLine::new(m.desc, GOLD),
             ]
         }),
+        TipFor::Quick(k) => run
+            .bag
+            .quick()
+            .get(k)
+            .map(|&i| item_tip(&run.bag, i, Some(k + 1))),
+        TipFor::Bag(super::panels::BagCell::Slot(i)) => {
+            run.bag.slots.get(i).map(|_| item_tip(&run.bag, i, None))
+        }
+        TipFor::Bag(super::panels::BagCell::Worn(i)) => {
+            run.bag.worn.get(i).and_then(Option::as_ref).map(|item| {
+                let mut lines = item_lines(item, 1);
+                lines.push(TipLine::new("Click to take it off.", GOLD));
+                lines
+            })
+        }
+        TipFor::Backpack => Some(vec![
+            TipLine::new("Backpack", Color::WHITE).header(),
+            TipLine::new(
+                format!(
+                    "{} of {} slots used",
+                    run.bag.slots.len(),
+                    super::bag::BAG_SLOTS
+                ),
+                Color::WHITE,
+            ),
+            TipLine::new(
+                format!("Looted: {}", super::bag::money(run.bag.copper)),
+                Color::WHITE,
+            ),
+            TipLine::new("Press B", GOLD),
+        ]),
         TipFor::Loot(i) => run.loot.get(i).map(|p| {
             vec![
                 TipLine::new(p.name.clone(), Color::srgb(0.64, 0.21, 0.93)).header(),

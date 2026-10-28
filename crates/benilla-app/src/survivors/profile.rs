@@ -2,11 +2,13 @@
 //! are open from the first boot; every other zone opens once the zone before it in the menu's
 //! order (by level) has been won, the first of them once any starting zone has.
 //!
-//! It also keeps the armor each class has collected ([`super::gear`]).
+//! It also keeps the armor each class has collected ([`super::gear`]) and the purse, the copper
+//! every run has brought home ([`super::bag`]).
 //!
 //! Saved as `benilla-config/survivors-profile.txt` (`localStorage` on the page), one zone per
 //! line, `name\twins\truns\tbest_secs\tbest_kills`, keyed by name so a reordered or extended
-//! [`data::MAPS`] keeps every record, and one owned piece per line, `gear\tclass\tset\tslot`.
+//! [`data::MAPS`] keeps every record, one owned piece per line, `gear\tclass\tset\tslot`, and
+//! `copper\tamount`.
 
 use bevy::prelude::*;
 
@@ -32,6 +34,8 @@ pub(super) struct Profile {
     pub zones: Vec<ZoneRecord>,
     /// Owned armor, `(class id, set, slot index)`.
     pub gear: BTreeSet<(u8, u8, u8)>,
+    /// The purse, in copper.
+    pub copper: u64,
     /// Bumped on every change, so the menu rebuilds once.
     pub version: u32,
 }
@@ -41,6 +45,7 @@ impl Default for Profile {
         let mut p = Self {
             zones: vec![ZoneRecord::default(); data::MAPS.len()],
             gear: BTreeSet::new(),
+            copper: 0,
             version: 0,
         };
         if let Some(text) = path().and_then(|p| crate::local_state::read_to_string(&p).ok()) {
@@ -59,6 +64,10 @@ impl Profile {
         for line in text.lines() {
             let mut f = line.split('\t');
             let Some(name) = f.next() else { continue };
+            if name == "copper" {
+                self.copper = f.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                continue;
+            }
             if name == "gear" {
                 let v: Vec<u8> = f.filter_map(|v| v.parse().ok()).collect();
                 if let [class, set, slot] = v[..] {
@@ -93,6 +102,9 @@ impl Profile {
             .collect();
         for (class, set, slot) in &self.gear {
             text.push_str(&format!("gear\t{class}\t{set}\t{slot}\n"));
+        }
+        if self.copper > 0 {
+            text.push_str(&format!("copper\t{}\n", self.copper));
         }
         if let Some(path) = path() {
             let _ = crate::local_state::write_atomic(&path, &text);
@@ -166,6 +178,7 @@ impl Profile {
         r.wins += u32::from(run.won);
         r.best_secs = r.best_secs.max(run.elapsed as u32);
         r.best_kills = r.best_kills.max(run.kills);
+        self.copper += run.earned;
         self.version += 1;
         self.save();
         (0..data::MAPS.len()).find(|&m| !before[m] && self.is_open(m))
@@ -209,6 +222,8 @@ pub(super) fn record_run(
     mut run: ResMut<Run>,
     selection: Res<Selection>,
 ) {
+    // The coins picked up, and the bag and the worn pieces sold.
+    run.earned = run.bag.copper + run.bag.worth();
     let opened = profile.record(selection.stage, &run);
     run.opened = opened;
 }
@@ -243,6 +258,22 @@ mod tests {
         assert!(!p.is_open(rest[1]));
         assert_eq!(win(&mut p, rest[0]), Some(rest[1]));
         assert_eq!(win(&mut p, rest[0]), None);
+    }
+
+    #[test]
+    fn a_run_brings_its_coins_home() {
+        let mut p = Profile {
+            zones: vec![ZoneRecord::default(); data::MAPS.len()],
+            gear: BTreeSet::new(),
+            copper: 50,
+            version: 0,
+        };
+        let run = Run {
+            earned: 1_250,
+            ..Run::default()
+        };
+        p.record(0, &run);
+        assert_eq!(p.copper, 1_300);
     }
 
     #[test]

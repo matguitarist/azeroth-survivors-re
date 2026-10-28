@@ -3,8 +3,9 @@
 //! gem away from the crowd and logs the run every ten seconds; `WOW_SURVIVORS_SHOTS=<dir>` also
 //! saves a screenshot every few seconds, which needs no window focus. A `:idle`, `:all` or `:late`
 //! suffix on the class name changes the run, as the fields below say; `:settings` pauses and shows
-//! each tab of Settings, for their screenshots. `WOW_SURVIVORS_MAP=<index or
-//! name>` picks the battleground.
+//! each tab of Settings, for their screenshots; `:bag` opens the backpack 25 seconds in.
+//! `WOW_SURVIVORS_MAP=<index or name>` picks the battleground, and `WOW_SURVIVORS_LOOT=rich` makes
+//! coins and items drop twenty times as often.
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
@@ -29,6 +30,8 @@ pub(super) struct Auto {
     late: bool,
     /// `<class>:settings`: pause a few seconds in and show each Settings tab.
     settings: bool,
+    /// `<class>:bag`: open the backpack 25 seconds in.
+    bag: bool,
     frames: u32,
     wait: f32,
     shots: Option<std::path::PathBuf>,
@@ -68,6 +71,7 @@ pub(super) fn from_env() -> Option<Auto> {
     let late = mode.eq_ignore_ascii_case("late");
     let all = late || mode.eq_ignore_ascii_case("all");
     let settings = mode.eq_ignore_ascii_case("settings");
+    let bag = mode.eq_ignore_ascii_case("bag");
     let class = data::CLASSES
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(name))
@@ -95,6 +99,7 @@ pub(super) fn from_env() -> Option<Auto> {
         all,
         late,
         settings,
+        bag,
         frames: 0,
         wait: 0.0,
         shots,
@@ -172,6 +177,7 @@ pub(super) fn drive(
     enemies: Query<&Enemy>,
     mut open: ResMut<super::panels::SettingsOpen>,
     mut tab: ResMut<super::panels::Tab>,
+    mut bag: ResMut<super::panels::BagOpen>,
 ) {
     let dt = time.delta_secs();
     auto.wait += dt;
@@ -248,6 +254,22 @@ pub(super) fn drive(
                 next.set(Phase::Paused);
                 open.0 = true;
                 auto.wait = 0.0;
+            }
+        }
+        Phase::Playing if auto.bag => {
+            if run.elapsed > 25.0 && !auto.seen.iter().any(|s| s == "bag") {
+                next.set(Phase::Paused);
+                bag.0 = true;
+                auto.wait = 0.0;
+            }
+        }
+        Phase::Paused if auto.bag => {
+            if auto.wait > 1.0 {
+                auto.capture_once(&mut commands, "bag".into());
+            }
+            if auto.wait > 2.0 {
+                bag.0 = false;
+                next.set(Phase::Playing);
             }
         }
         Phase::Paused if auto.settings => {

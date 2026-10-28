@@ -6,6 +6,9 @@
 //! own CVar, which applies it and saves it with the config; the latched display rows are
 //! committed at once, as the options' Okay does with `RestartGx()`. The Controls tab holds the
 //! camera lock, saved beside the profile, and every control.
+//!
+//! B, or the bar's backpack button, pauses on a third dialog: the worn trinkets over the bag's
+//! sixteen slots ([`super::bag`]), each item's tooltip on hover, a click to use or wear it.
 
 use bevy::prelude::*;
 
@@ -26,6 +29,29 @@ const OVER_W: f32 = 460.0;
 
 /// The Settings dialog's width.
 const SETTINGS_W: f32 = 340.0;
+/// The backpack dialog's width, and its cells' size and gap.
+const BAG_W: f32 = 320.0;
+const CELL: f32 = 40.0;
+const CELL_GAP: f32 = 6.0;
+
+/// Whether the pause root shows the backpack.
+#[derive(Resource, Default)]
+pub(super) struct BagOpen(pub(super) bool);
+
+/// A backpack cell: a worn socket, or a bag slot.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum BagCell {
+    Worn(usize),
+    Slot(usize),
+}
+
+/// A cell's item, rebuilt when the bag changes.
+#[derive(Component)]
+pub(super) struct BagFace;
+
+/// The backpack's coin line.
+#[derive(Component)]
+pub(super) struct BagMoney;
 
 /// On a root once its dialog is built.
 #[derive(Component)]
@@ -55,6 +81,7 @@ const TABS: [(Tab, &str); 3] = [
 pub(super) enum PauseBox {
     Menu,
     Settings,
+    Bag,
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -391,6 +418,83 @@ pub(super) fn build_panels(
             });
     }
 
+    for root in &pause {
+        commands.entity(root).with_children(|root| {
+            let title = centered_bundle(f, "Backpack", 14.0, GOLD_TONE);
+            dialog(root, art, BAG_W, PauseBox::Bag, title, |b| {
+                let heading = |b: &mut ChildSpawnerCommands, s: &str| {
+                    b.spawn(Node {
+                        margin: UiRect::vertical(Val::Px(4.0)),
+                        ..default()
+                    })
+                    .with_children(|n| {
+                        n.spawn(centered_bundle(f, s, 12.0, GOLD_TONE));
+                    });
+                };
+                heading(b, "Equipped");
+                b.spawn(Node {
+                    column_gap: Val::Px(CELL_GAP),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for (i, slot) in super::bag::WORN.iter().enumerate() {
+                        bag_cell(row, BagCell::Worn(i), Some(slot.empty_art()));
+                    }
+                });
+                heading(b, "Bag");
+                b.spawn(Node {
+                    display: Display::Grid,
+                    grid_template_columns: RepeatedGridTrack::px(4, CELL),
+                    column_gap: Val::Px(CELL_GAP),
+                    row_gap: Val::Px(CELL_GAP),
+                    ..default()
+                })
+                .with_children(|grid| {
+                    for i in 0..super::bag::BAG_SLOTS {
+                        bag_cell(grid, BagCell::Slot(i), None);
+                    }
+                });
+                b.spawn(Node {
+                    margin: UiRect::top(Val::Px(8.0)),
+                    ..default()
+                })
+                .with_children(|n| {
+                    n.spawn((BagMoney, centered_bundle(f, "", 12.0, Color::WHITE)));
+                });
+                b.spawn(Node {
+                    max_width: Val::Px(BAG_W - 40.0),
+                    margin: UiRect::top(Val::Px(4.0)),
+                    ..default()
+                })
+                .with_children(|n| {
+                    n.spawn(centered_bundle(
+                        f,
+                        "Click a potion, food or explosive to use it, a ring, neck, cloak or trinket to wear it. What is left is sold when the run ends.",
+                        11.0,
+                        DIM_GREY,
+                    ));
+                });
+                b.spawn(Node {
+                    margin: UiRect::top(Val::Px(6.0)),
+                    ..default()
+                })
+                .with_children(|r| {
+                    glue_button(
+                        r,
+                        art,
+                        f,
+                        UiAction::CloseBag,
+                        "Close",
+                        180.0,
+                        34.0,
+                        GlueBtnKind::Small,
+                        1.0,
+                    );
+                });
+            });
+        });
+    }
+
     for root in &over {
         commands
             .entity(root)
@@ -574,6 +678,7 @@ fn setting_row(
 pub(super) fn settings(
     clicks: Res<GlueClicks>,
     open: Res<SettingsOpen>,
+    bag: Res<BagOpen>,
     tab: Res<Tab>,
     steps: Query<(Entity, &SettingStep)>,
     mut values: Query<(&SettingValue, &mut Text)>,
@@ -590,7 +695,12 @@ pub(super) fn settings(
         }
     };
     for (b, mut node) in &mut boxes {
-        shown(&mut node, (*b == PauseBox::Settings) == open.0);
+        let show = match b {
+            PauseBox::Menu => !open.0 && !bag.0,
+            PauseBox::Settings => open.0,
+            PauseBox::Bag => bag.0 && !open.0,
+        };
+        shown(&mut node, show);
     }
     if !open.0 {
         return;
@@ -700,6 +810,171 @@ pub(super) fn buttons(
             }
             _ => {}
         }
+    }
+}
+
+/// One backpack cell: a dark socket (a worn one shows its slot's empty art) that takes clicks and
+/// raises the item's tooltip.
+fn bag_cell(b: &mut ChildSpawnerCommands, cell: BagCell, empty: Option<&'static str>) {
+    b.spawn((
+        cell,
+        Button,
+        Interaction::default(),
+        super::hud::TipFor::Bag(cell),
+        Node {
+            width: Val::Px(CELL),
+            height: Val::Px(CELL),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+        BorderColor::all(Color::srgba(0.4, 0.4, 0.4, 0.8)),
+    ))
+    .with_children(|c| {
+        if let Some(art) = empty {
+            c.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                ImageNode {
+                    color: Color::NONE,
+                    ..default()
+                },
+                super::hud::UiArt::crop(art, [0.0, 1.0, 0.0, 1.0]),
+                bevy::ui::FocusPolicy::Pass,
+            ));
+        }
+    });
+}
+
+/// The backpack's faces when the bag changes, its borders in each item's quality colour, and its
+/// coin line.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub(super) fn refresh_bag(
+    mut commands: Commands,
+    run: Res<super::Run>,
+    profile: Res<super::profile::Profile>,
+    font: Res<HudFont>,
+    mut cells: Query<(Entity, &BagCell, &mut BorderColor)>,
+    faces: Query<Entity, With<BagFace>>,
+    mut money: Query<&mut Text, With<BagMoney>>,
+    mut assets: Option<ResMut<benilla_assets::WorldAssets>>,
+    mut images: ResMut<Assets<Image>>,
+    mut shown: Local<Option<u32>>,
+) {
+    let line = format!(
+        "Looted this run: {}     Purse: {}",
+        super::bag::money(run.bag.copper),
+        super::bag::money(profile.copper)
+    );
+    for mut t in &mut money {
+        if t.0 != line {
+            t.0 = line.clone();
+        }
+    }
+    if *shown == Some(run.bag.version) || cells.is_empty() {
+        return;
+    }
+    let Some(assets) = assets.as_deref_mut() else {
+        return;
+    };
+    *shown = Some(run.bag.version);
+    for e in &faces {
+        commands.entity(e).despawn();
+    }
+    for (e, cell, mut border) in &mut cells {
+        let held = match *cell {
+            BagCell::Worn(i) => run.bag.worn[i].as_ref().map(|it| (it, 1)),
+            BagCell::Slot(i) => run.bag.slots.get(i).map(|(it, n)| (it, *n)),
+        };
+        let edge = held
+            .filter(|(it, _)| it.quality >= super::bag::Quality::Uncommon)
+            .map_or(Color::srgba(0.4, 0.4, 0.4, 0.8), |(it, _)| {
+                it.quality.color()
+            });
+        *border = BorderColor::all(edge);
+        let Some((item, count)) = held else { continue };
+        let icon = super::hud::item_icon(assets, &mut images, item.icon);
+        let face = commands
+            .spawn((
+                BagFace,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                bevy::ui::FocusPolicy::Pass,
+            ))
+            .with_children(|b| super::hud::item_face(b, &font.0, icon, count))
+            .id();
+        commands.entity(e).add_child(face);
+    }
+}
+
+/// The backpack: B or the bar's button opens it over a paused battle, B, Escape or Close shuts
+/// it; a click uses, wears or takes off the item under it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn bag_input(
+    clicks: Res<GlueClicks>,
+    keys: Res<ButtonInput<KeyCode>>,
+    phase: Res<State<Phase>>,
+    mut next: ResMut<NextState<Phase>>,
+    mut open: ResMut<BagOpen>,
+    settings: Res<SettingsOpen>,
+    mut run: ResMut<super::Run>,
+    button: Query<Entity, With<super::hud::BackpackButton>>,
+    cells: Query<(Entity, &BagCell)>,
+    actions: Query<(Entity, &UiAction)>,
+) {
+    let pressed = button.iter().any(|e| clicks.hit(e));
+    match *phase.get() {
+        Phase::Playing if keys.just_pressed(KeyCode::KeyB) || pressed => {
+            open.0 = true;
+            next.set(Phase::Paused);
+            return;
+        }
+        Phase::Paused if open.0 && !settings.0 => {
+            let close = actions
+                .iter()
+                .any(|(e, a)| *a == UiAction::CloseBag && clicks.hit(e));
+            if close || keys.just_pressed(KeyCode::KeyB) || keys.just_pressed(KeyCode::Escape) {
+                open.0 = false;
+                next.set(Phase::Playing);
+                return;
+            }
+        }
+        Phase::Paused => return,
+        _ => {
+            open.0 = false;
+            return;
+        }
+    }
+    let max_hp = run.stats().max_hp;
+    let run = &mut *run;
+    for (e, cell) in &cells {
+        if !clicks.hit(e) {
+            continue;
+        }
+        match *cell {
+            BagCell::Worn(i) => run.bag.unequip(i),
+            BagCell::Slot(i) => {
+                let gear = run
+                    .bag
+                    .slots
+                    .get(i)
+                    .is_some_and(|(it, _)| it.gear_slot().is_some());
+                if gear {
+                    run.bag.equip(i);
+                } else {
+                    run.bag.use_slot(i, &mut run.hp, max_hp, true);
+                }
+            }
+        }
+        run.version += 1;
     }
 }
 

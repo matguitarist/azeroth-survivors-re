@@ -155,6 +155,12 @@ fn keys_for(phase: Phase, button: GamepadButton) -> &'static [KeyCode] {
         (Phase::Playing, B::South) => &[KeyCode::Space],
         (Phase::Playing, B::West | B::RightTrigger) => &[super::mobility::KEY],
         (Phase::Playing, B::North) => &[KeyCode::KeyC],
+        // The item bar on the D-pad, as 1 to 4; Select opens and shuts the backpack.
+        (Phase::Playing, B::DPadLeft) => &[KeyCode::Digit1],
+        (Phase::Playing, B::DPadUp) => &[KeyCode::Digit2],
+        (Phase::Playing, B::DPadRight) => &[KeyCode::Digit3],
+        (Phase::Playing, B::DPadDown) => &[KeyCode::Digit4],
+        (Phase::Playing | Phase::Paused, B::Select) => &[KeyCode::KeyB],
         (Phase::Playing, B::Start) | (Phase::Paused, B::Start | B::East) => &[KeyCode::Escape],
         // The cards as the face buttons sit: left, top, right.
         (Phase::LevelUp, B::West) => &[KeyCode::Digit1],

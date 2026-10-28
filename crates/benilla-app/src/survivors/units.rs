@@ -446,6 +446,16 @@ impl Fx<'_> {
         });
     }
 
+    /// A floating line of text over `anchor`, 0xAARRGGBB.
+    pub fn label(&mut self, anchor: Entity, text: String, color: u32) {
+        self.text.write(CombatTextSpawn {
+            anchor,
+            text,
+            category: 0,
+            color: Some(color),
+        });
+    }
+
     /// A floating number over `anchor`, 0xAARRGGBB.
     pub fn number(&mut self, anchor: Entity, amount: f32, crit: bool, color: u32) {
         let shown = amount.round().max(1.0) as i64;

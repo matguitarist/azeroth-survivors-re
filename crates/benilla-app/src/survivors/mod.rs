@@ -6,6 +6,7 @@
 
 mod abilities;
 mod auto;
+mod bag;
 mod cards;
 mod data;
 mod enemies;
@@ -25,7 +26,7 @@ mod units;
 use benilla_world::schedule::WorldStage;
 use bevy::prelude::*;
 
-use data::{AbilityDef, ClassDef, PassiveDef, Stat};
+use data::{AbilityDef, ClassDef, PassiveDef};
 
 /// Set by [`crate::run_survivors`] before the app builds. wasm32 has no process environment, so
 /// the flag lives here; `WOW_SURVIVORS` (`?survivors=1` / `__wenilla_env.survivors` on the web)
@@ -57,6 +58,7 @@ impl Plugin for SurvivorsPlugin {
             .add_systems(Update, gear::build_catalog.before(hud::menu_preview))
             .init_resource::<panels::SettingsOpen>()
             .init_resource::<panels::Tab>()
+            .init_resource::<panels::BagOpen>()
             .add_systems(Update, panels::keep_camera.after(WorldStage::Input))
             .init_resource::<pad::Pad>()
             .add_systems(PreUpdate, pad::read_pad.after(bevy::input::InputSystems))
@@ -115,8 +117,11 @@ impl Plugin for SurvivorsPlugin {
                     abilities::apply_hits,
                     enemies::tick_marks,
                     enemies::drop_loot,
+                    bag::drop_items,
                     gear::boss_drops,
                     enemies::collect_gems,
+                    bag::collect_pickups,
+                    bag::use_items,
                     hero::hero_vitals,
                 )
                     .chain()
@@ -134,7 +139,7 @@ impl Plugin for SurvivorsPlugin {
                 (
                     hero::follow_map,
                     hud::menu_preview,
-                    panels::buttons,
+                    (panels::buttons, panels::bag_input).chain(),
                     hud::keys,
                     hud::refresh_menu,
                     menu::restore_pick,
@@ -162,6 +167,8 @@ impl Plugin for SurvivorsPlugin {
                     hud::apply_ui_scale,
                     hud::fill_art,
                     hud::xp_hover,
+                    hud::refresh_items,
+                    panels::refresh_bag,
                     hud::icon_tooltip,
                     hud::hero_plate,
                     minimap::map_buttons,
@@ -323,6 +330,10 @@ pub(super) struct Run {
     pub version: u32,
     /// A centre-screen announcement and its seconds left.
     pub banner: Option<(String, f32)>,
+    /// The backpack, the worn trinkets and the coins picked up.
+    pub bag: bag::Bag,
+    /// At the results: what went to the purse, the coins and the bag sold.
+    pub earned: u64,
 }
 
 impl Default for Run {
@@ -360,6 +371,8 @@ impl Default for Run {
             damage_done: 0.0,
             version: 0,
             banner: None,
+            bag: bag::Bag::default(),
+            earned: 0,
         }
     }
 }
@@ -387,20 +400,9 @@ impl Run {
         s.might += self.gear_might;
         s.max_hp *= 1.0 + self.gear_hp;
         for &(p, level) in &self.passives {
-            let v = p.per_level * f32::from(level);
-            match p.stat {
-                Stat::Might => s.might += v,
-                Stat::MaxHp => s.max_hp *= 1.0 + v,
-                Stat::Speed => s.speed *= 1.0 + v,
-                Stat::Regen => s.regen += v,
-                Stat::Haste => s.haste += v,
-                Stat::Area => s.area += v,
-                Stat::Magnet => s.magnet *= 1.0 + v,
-                Stat::Growth => s.growth += v,
-                Stat::Armor => s.armor += v,
-                Stat::Crit => s.crit += v,
-            }
+            bag::add_stat(&mut s, p.stat, p.per_level * f32::from(level));
         }
+        self.bag.apply(&mut s);
         s
     }
 

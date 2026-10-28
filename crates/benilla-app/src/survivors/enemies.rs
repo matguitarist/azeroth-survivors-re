@@ -58,6 +58,9 @@ pub(super) struct Loot {
     pub pos: Vec3,
     pub xp: u32,
     pub boss: bool,
+    /// The creature's level and whether it was a great beast, for the coins and items it drops.
+    pub level: u32,
+    pub big: bool,
 }
 
 #[derive(Clone, Copy)]
