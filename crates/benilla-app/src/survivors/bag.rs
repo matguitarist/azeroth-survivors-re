@@ -704,13 +704,33 @@ fn gear(level: u32, quality: Quality, rng: &mut Rng) -> Item {
     }
 }
 
-/// Copper as the money frame shows it: `1g 2s 3c`, leaving out the empty leading coins.
+/// A Minor Healing Potion, as the merchant's Provisions start a run with.
+pub(super) fn potion() -> Item {
+    let u = &USES[0];
+    Item {
+        name: u.name.into(),
+        icon: u.icon,
+        quality: u.quality,
+        kind: Kind::Use(u),
+        sell: 5,
+    }
+}
+
+/// Copper as the money frame shows it, `1g 2s 3c`, leaving out the empty coins.
 pub(super) fn money(copper: u64) -> String {
-    let (g, s, c) = (copper / 10_000, copper / 100 % 100, copper % 100);
-    match (g, s) {
-        (0, 0) => format!("{c}c"),
-        (0, _) => format!("{s}s {c}c"),
-        _ => format!("{g}g {s}s {c}c"),
+    let parts: Vec<String> = [
+        (copper / 10_000, 'g'),
+        (copper / 100 % 100, 's'),
+        (copper % 100, 'c'),
+    ]
+    .into_iter()
+    .filter(|&(n, _)| n > 0)
+    .map(|(n, c)| format!("{n}{c}"))
+    .collect();
+    if parts.is_empty() {
+        "0c".to_string()
+    } else {
+        parts.join(" ")
     }
 }
 
@@ -764,7 +784,8 @@ pub(super) fn drop_items(
             (coin_p, item_p)
         };
         if rng.f32() < coin_p {
-            let n = coins(d.level, &mut rng) * coin_x;
+            let greed = super::merchant::greed(&run.ranks);
+            let n = (coins(d.level, &mut rng) as f32 * greed) as u32 * coin_x;
             spawn_pickup(
                 &mut commands,
                 &mut run,
@@ -958,7 +979,9 @@ mod tests {
     fn coins_read_as_the_money_frame_shows_them() {
         assert_eq!(money(7), "7c");
         assert_eq!(money(1_203), "12s 3c");
-        assert_eq!(money(10_000), "1g 0s 0c");
+        assert_eq!(money(10_000), "1g");
+        assert_eq!(money(10_005), "1g 5c");
+        assert_eq!(money(0), "0c");
         assert_eq!(money(25_150), "2g 51s 50c");
     }
 

@@ -224,7 +224,7 @@ const VOLUMES: [(&str, &str); 4] = [
 
 /// The dialog frame: the background tiled at 32 inside (11,12,12,11), the 32-edge border over
 /// it, and the header plaque (256×64 at TOP (0,12)) with its title 14 down in it.
-fn dialog(
+pub(super) fn dialog(
     root: &mut ChildSpawnerCommands,
     art: &GlueArt,
     w: f32,

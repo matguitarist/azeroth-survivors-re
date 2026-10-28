@@ -16,6 +16,7 @@ mod grade;
 mod hero;
 mod hud;
 mod menu;
+mod merchant;
 mod minimap;
 mod mobility;
 mod pad;
@@ -59,6 +60,14 @@ impl Plugin for SurvivorsPlugin {
             .init_resource::<panels::SettingsOpen>()
             .init_resource::<panels::Tab>()
             .init_resource::<panels::BagOpen>()
+            .init_resource::<merchant::MerchantOpen>()
+            .add_systems(
+                Update,
+                (merchant::build_merchant, merchant::merchant)
+                    .chain()
+                    .after(menu::build_menu)
+                    .before(crate::glue::GlueVisuals),
+            )
             .add_systems(Update, panels::keep_camera.after(WorldStage::Input))
             .init_resource::<pad::Pad>()
             .add_systems(PreUpdate, pad::read_pad.after(bevy::input::InputSystems))
@@ -334,6 +343,8 @@ pub(super) struct Run {
     pub bag: bag::Bag,
     /// At the results: what went to the purse, the coins and the bag sold.
     pub earned: u64,
+    /// The merchant's upgrades, as bought when the run began.
+    pub ranks: merchant::Ranks,
 }
 
 impl Default for Run {
@@ -373,6 +384,7 @@ impl Default for Run {
             banner: None,
             bag: bag::Bag::default(),
             earned: 0,
+            ranks: [0; merchant::UPGRADES.len()],
         }
     }
 }
@@ -403,6 +415,7 @@ impl Run {
             bag::add_stat(&mut s, p.stat, p.per_level * f32::from(level));
         }
         self.bag.apply(&mut s);
+        merchant::apply(&self.ranks, &mut s);
         s
     }
 

@@ -273,6 +273,10 @@ fn centered(font: &Handle<Font>, s: impl Into<String>, size: f32, color: Color) 
     )
 }
 
+pub(super) fn icon_bundle(spell: u32, size: f32) -> impl Bundle {
+    icon(spell, size)
+}
+
 fn icon(spell: u32, size: f32) -> impl Bundle {
     (
         Node {
@@ -444,6 +448,7 @@ fn action_bar(
                     height: Val::Px(SLOT),
                     ..default()
                 },
+                BackgroundColor(Color::srgba(0.02, 0.02, 0.02, 0.85)),
                 Interaction::default(),
                 TipFor::Quick(k),
             ))
@@ -1081,12 +1086,17 @@ pub(super) fn start_run(run: &mut Run, selection: &mut Selection) -> bool {
     // The world goes to the battleground picked; until now it stood in the last one.
     selection.stage = selection.map;
     let next_guid = run.next_guid;
+    let ranks = run.ranks;
     *run = Run {
         class,
         race,
         next_guid,
+        ranks,
         ..Run::default()
     };
+    for _ in 0..super::merchant::provisions(&ranks) {
+        run.bag.add(super::bag::potion());
+    }
     run.abilities.push(Owned {
         def: data::ability(class.start),
         level: 1,

@@ -3,7 +3,8 @@
 //! gem away from the crowd and logs the run every ten seconds; `WOW_SURVIVORS_SHOTS=<dir>` also
 //! saves a screenshot every few seconds, which needs no window focus. A `:idle`, `:all` or `:late`
 //! suffix on the class name changes the run, as the fields below say; `:settings` pauses and shows
-//! each tab of Settings, for their screenshots; `:bag` opens the backpack 25 seconds in.
+//! each tab of Settings, for their screenshots; `:bag` opens the backpack 25 seconds in, and
+//! `:merchant` the merchant on the pick screen.
 //! `WOW_SURVIVORS_MAP=<index or name>` picks the battleground, and `WOW_SURVIVORS_LOOT=rich` makes
 //! coins and items drop twenty times as often.
 
@@ -32,6 +33,8 @@ pub(super) struct Auto {
     settings: bool,
     /// `<class>:bag`: open the backpack 25 seconds in.
     bag: bool,
+    /// `<class>:merchant`: show the merchant before the run.
+    merchant: bool,
     frames: u32,
     wait: f32,
     shots: Option<std::path::PathBuf>,
@@ -72,6 +75,7 @@ pub(super) fn from_env() -> Option<Auto> {
     let all = late || mode.eq_ignore_ascii_case("all");
     let settings = mode.eq_ignore_ascii_case("settings");
     let bag = mode.eq_ignore_ascii_case("bag");
+    let merchant = mode.eq_ignore_ascii_case("merchant");
     let class = data::CLASSES
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(name))
@@ -100,6 +104,7 @@ pub(super) fn from_env() -> Option<Auto> {
         late,
         settings,
         bag,
+        merchant,
         frames: 0,
         wait: 0.0,
         shots,
@@ -178,6 +183,7 @@ pub(super) fn drive(
     mut open: ResMut<super::panels::SettingsOpen>,
     mut tab: ResMut<super::panels::Tab>,
     mut bag: ResMut<super::panels::BagOpen>,
+    mut shop: ResMut<super::merchant::MerchantOpen>,
 ) {
     let dt = time.delta_secs();
     auto.wait += dt;
@@ -196,6 +202,14 @@ pub(super) fn drive(
                 auto.wait = 0.0;
             } else if heroes.is_empty() || loading.covering() {
                 auto.wait = 0.0;
+            } else if auto.merchant && !auto.seen.iter().any(|s| s == "merchant") {
+                shop.0 = auto.wait > 1.5;
+                if auto.wait > 3.0 {
+                    auto.capture_once(&mut commands, "merchant".into());
+                    auto.wait = 0.0;
+                }
+            } else if shop.0 {
+                shop.0 = false;
             } else if auto.wait > 2.0 && auto.wait < 3.0 {
                 auto.capture_once(&mut commands, "menu".into());
             } else if auto.wait > 3.0 && hud::start_run(&mut run, &mut selection) {

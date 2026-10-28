@@ -36,6 +36,8 @@ pub(super) struct Profile {
     pub gear: BTreeSet<(u8, u8, u8)>,
     /// The purse, in copper.
     pub copper: u64,
+    /// The merchant's upgrades bought.
+    pub ranks: super::merchant::Ranks,
     /// Bumped on every change, so the menu rebuilds once.
     pub version: u32,
 }
@@ -46,6 +48,7 @@ impl Default for Profile {
             zones: vec![ZoneRecord::default(); data::MAPS.len()],
             gear: BTreeSet::new(),
             copper: 0,
+            ranks: [0; super::merchant::UPGRADES.len()],
             version: 0,
         };
         if let Some(text) = path().and_then(|p| crate::local_state::read_to_string(&p).ok()) {
@@ -66,6 +69,14 @@ impl Profile {
             let Some(name) = f.next() else { continue };
             if name == "copper" {
                 self.copper = f.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                continue;
+            }
+            if name == "upgrade" {
+                let key = f.next().unwrap_or("");
+                let rank = f.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                if let Some(i) = super::merchant::index(key) {
+                    self.ranks[i] = rank.min(super::merchant::UPGRADES[i].ranks);
+                }
                 continue;
             }
             if name == "gear" {
@@ -105,6 +116,11 @@ impl Profile {
         }
         if self.copper > 0 {
             text.push_str(&format!("copper\t{}\n", self.copper));
+        }
+        for (u, &r) in super::merchant::UPGRADES.iter().zip(&self.ranks) {
+            if r > 0 {
+                text.push_str(&format!("upgrade\t{}\t{r}\n", u.key));
+            }
         }
         if let Some(path) = path() {
             let _ = crate::local_state::write_atomic(&path, &text);
@@ -168,6 +184,20 @@ impl Profile {
 
     pub fn is_open(&self, map: usize) -> bool {
         self.lock(map).is_none()
+    }
+
+    /// Buy the next rank of the `i`th upgrade; false at the top rank or short of coin.
+    pub fn buy(&mut self, i: usize) -> bool {
+        let u = &super::merchant::UPGRADES[i];
+        let r = self.ranks[i];
+        if r >= u.ranks || self.copper < u.price(r) {
+            return false;
+        }
+        self.copper -= u.price(r);
+        self.ranks[i] += 1;
+        self.version += 1;
+        self.save();
+        true
     }
 
     /// Record a finished run; the zone it opened, if it opened one.
@@ -266,6 +296,7 @@ mod tests {
             zones: vec![ZoneRecord::default(); data::MAPS.len()],
             gear: BTreeSet::new(),
             copper: 50,
+            ranks: [0; super::super::merchant::UPGRADES.len()],
             version: 0,
         };
         let run = Run {
@@ -274,6 +305,14 @@ mod tests {
         };
         p.record(0, &run);
         assert_eq!(p.copper, 1_300);
+        // Short of the first rank of Might's 20 silver, then spent at the merchant.
+        assert!(!p.buy(0));
+        p.copper = 5_000;
+        assert!(p.buy(0));
+        assert_eq!(p.copper, 3_000);
+        assert_eq!(p.ranks[0], 1);
+        // The second rank, 36 silver, is out of reach.
+        assert!(!p.buy(0));
     }
 
     #[test]
