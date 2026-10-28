@@ -21,6 +21,9 @@ Pick a class and a battleground, then survive: WASD to move, your abilities cast
 enemies swarm in waves, you level up and pick upgrades, and a boss shows up every couple of
 minutes. **No server, no login, no account** — fully offline and self-contained.
 
+The launcher also plays **Classic**, the original 1.12.1 game, on a server you run on your Mac (the
+launcher sets one up in Docker) or one at an address.
+
 <table>
   <tr>
     <td width="50%"><img src="docs/screenshots/menu.jpg" alt="The pick screen: race, gender and class on the left, sixteen zones on the right, the hero in between"></td>

@@ -1,0 +1,12 @@
+## Interface: 11200
+## Title: Azeroth|cffffd100Plus|r
+## Notes: Modern conveniences for 1.12: a cooldown manager, a damage meter, a swing timer and a personal resource display. /ap for options.
+## Author: Azeroth Survivors
+## Version: 1.0
+## SavedVariablesPerCharacter: AzerothPlusDB
+core.lua
+cooldowns.lua
+meter.lua
+swing.lua
+resource.lua
+options.lua

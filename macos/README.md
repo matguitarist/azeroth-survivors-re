@@ -8,6 +8,8 @@ Azeroth Survivors.app/Contents/
   MacOS/warcraft-survivors    the game: a player build (--no-default-features), ship profile
   Frameworks/Sparkle.framework
   Resources/                  icon, key art, data-manifest.tsv
+  Resources/Server/           the local server's compose.yaml and configs (macos/Server)
+  Resources/AddOns/           Classic's shipped addons (addons/), copied into benilla-config/AddOns
 ```
 
 The launcher:
@@ -23,6 +25,30 @@ The launcher:
   the cvars in `benilla-config/config.toml`,
   kept in Application Support (`$BENILLA_HOME`), never inside the bundle. The game is only told
   what it already reads at boot; the launcher edits the file only while the game is closed.
+- **Plays Survivors or Classic.** Classic is the original game (`warcraft-survivors --classic`),
+  on a 1.12.1 server: at an address (the game's `realmList`), or **on this Mac**. benilla has no
+  Warden, so a server that requires it refuses the connection; vmangos ships with it off.
+- **Runs the server on this Mac** in Docker (OrbStack or Docker Desktop), from
+  [vmangos-deploy](https://github.com/mserajnik/vmangos-deploy)'s prebuilt images
+  (`LocalServer.swift`). Setup copies `macos/Server` (CC0, from that project's examples) to
+  `Application Support/Azeroth Survivors/Server`, pulls the images (about 1 GB), reads the terrain
+  and DBCs from the game's own Data folder in seconds, and builds the world database (about
+  2.5 minutes in all). That quick data plays without line of sight or pathing. Settings › Server
+  runs the full extraction in the background (hours); the next start swaps it in, and rolls back
+  to the quick data if it does not start. Accounts are created from the launcher: the game binary
+  computes the SRP6 salt and verifier (`--account-sql`, name and password on stdin) and the
+  launcher feeds the SQL to the database container. The server starts as the launcher opens in
+  that mode (each start takes about a minute: vmangos-deploy checks its migrations), and stops when
+  the game or the launcher quits unless Settings keeps it. Ports bind to 127.0.0.1. Commands and
+  their output go to `~/Library/Logs/Azeroth Survivors/server.log`, never stdin.
+- **Installs AzerothPlus and AzerothAdmin** for Classic (`Addons.swift`, Settings › General):
+  before each Classic launch the shipped addons replace their folders in `benilla-config/AddOns`,
+  so the app's version is the one that runs; other addons there are untouched, and saved settings
+  live in `benilla-config/saved`. AzerothAdmin sends vmangos GM commands, so it needs an
+  administrator account (`gmlevel` 6, set per account in Settings › Server; new accounts default
+  to it). The shipped `mangosd.conf` starts a GM as a player (`GM.LoginState = 0`,
+  `GM.Visible = 1`, `GM.CheatGod = 0`); `migrateConf` applies that once to older copies
+  (`config/.version`).
 - **Updates itself** with [Sparkle](https://sparkle-project.org) from the feed at
   `https://github.com/<repo>/releases/latest/download/appcast.xml`.
 - Logs the game to `~/Library/Logs/Azeroth Survivors/game.log` and shows its tail on a crash.

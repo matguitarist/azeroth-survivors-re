@@ -6,8 +6,13 @@ struct LauncherView: View {
     @EnvironmentObject private var data: GameData
     @EnvironmentObject private var game: GameProcess
     @EnvironmentObject private var config: GameConfig
+    @EnvironmentObject private var server: LocalServer
     @Environment(\.openWindow) private var openWindow
     @AppStorage(Prefs.skipLauncherKey) private var skipLauncher = false
+    @AppStorage(Prefs.modeKey) private var mode: GameMode = .survivors
+    @AppStorage(Prefs.classicServerKey) private var classicServer: ClassicServer = .local
+    @AppStorage(Prefs.remoteServerKey) private var remoteServer = ""
+    @AppStorage(Prefs.keepServerKey) private var keepServer = false
     @State private var autoPlayed = false
 
     private var version: String {
@@ -42,8 +47,11 @@ struct LauncherView: View {
             if !running {
                 config.reload()
                 data.quickCheck()
+                gameQuit()
             }
         }
+        .onChange(of: mode) { _, _ in prewarm() }
+        .onChange(of: classicServer) { _, _ in prewarm() }
         .onChange(of: game.stuck) { _, stuck in
             if stuck { Launcher.surface() } else if game.running { Launcher.resubmerge() }
         }
@@ -85,17 +93,27 @@ struct LauncherView: View {
             }
 
         case .ready:
-            HStack(alignment: .center, spacing: 16) {
-                Button(action: play) {
-                    Text(game.running ? "Playing" : "Play")
-                        .font(.title2.weight(.bold))
-                        .frame(width: 180, height: 34)
+            VStack(alignment: .leading, spacing: 14) {
+                Picker("Mode", selection: $mode) {
+                    ForEach(GameMode.allCases) { Text($0.label).tag($0) }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(red: 0.75, green: 0.45, blue: 0.1))
-                .keyboardShortcut(.defaultAction)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 240)
                 .disabled(game.running)
-                SettingsLink()
+                if mode == .classic { classic }
+                HStack(alignment: .center, spacing: 16) {
+                    Button(action: play) {
+                        Text(game.running ? "Playing" : "Play")
+                            .font(.title2.weight(.bold))
+                            .frame(width: 180, height: 34)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(red: 0.75, green: 0.45, blue: 0.1))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(game.running || !Launcher.canPlay(server: server))
+                    SettingsLink()
+                }
             }
 
         case .missing(let files):
@@ -151,10 +169,69 @@ struct LauncherView: View {
         }
     }
 
+    /// Classic: the server on this Mac, or one at an address.
+    @ViewBuilder private var classic: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Server", selection: $classicServer) {
+                ForEach(ClassicServer.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.radioGroup)
+            .horizontalRadioGroupLayout()
+            .labelsHidden()
+            .disabled(game.running)
+            switch classicServer {
+            case .local: LocalServerPanel()
+            case .remote: remote
+            }
+        }
+        .frame(maxWidth: 560, alignment: .leading)
+    }
+
+    @ViewBuilder private var remote: some View {
+        HStack(spacing: 8) {
+            Text("Address")
+            TextField(Realm.fallback, text: $remoteServer)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 260)
+                .disabled(game.running)
+        }
+        Text("A WoW 1.12.1 server without the Warden anticheat, which this client does not have. You sign in on the game's login screen.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Start the local server ahead of Play: it takes about a minute.
+    private func prewarm() {
+        Task {
+            await server.refresh()
+            guard mode == .classic, classicServer == .local, !game.running, server.phase == .stopped else { return }
+            await server.start()
+        }
+    }
+
+    /// After a game: the address the login screen may have changed comes back to the launcher,
+    /// and the local server stops unless Settings keeps it.
+    private func gameQuit() {
+        guard mode == .classic else { return }
+        switch classicServer {
+        case .remote:
+            let now = config.value(Realm.cvar, default: Realm.fallback)
+            if now != Realm.fallback, now != LocalServer.address { remoteServer = now }
+        case .local:
+            if !keepServer { Task { await server.stop() } }
+        }
+    }
+
     private func appeared() {
         game.onExit = { Launcher.gameEnded(crashed: $0) }
         Launcher.openLauncher = { [openWindow] in openWindow(id: "launcher") }
         data.quickCheck()
+        if remoteServer.isEmpty {
+            let saved = config.value(Realm.cvar, default: Realm.fallback)
+            if saved != Realm.fallback, saved != LocalServer.address { remoteServer = saved }
+        }
+        prewarm()
         // "Start the game directly", unless ⌥ is held to reach the launcher.
         if skipLauncher, !autoPlayed, data.state == .ready, !NSEvent.modifierFlags.contains(.option) {
             autoPlayed = true
@@ -163,8 +240,7 @@ struct LauncherView: View {
     }
 
     private func play() {
-        if game.running { game.activate(); return }
-        Launcher.play(game: game)
+        Launcher.play(game: game, config: config)
     }
 
     private func chooseFolder() {

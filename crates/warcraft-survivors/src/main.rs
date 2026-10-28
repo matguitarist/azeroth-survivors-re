@@ -1,9 +1,20 @@
-//! The `warcraft-survivors` launcher: the build stamp, handed to the survivors mode.
+//! The `warcraft-survivors` launcher: the build stamp, handed to the survivors mode, or with
+//! `--classic` to benilla's own client, which logs on to a 1.12 server at the `realmList` address.
+//! `--account-sql` serves the launcher's local server instead ([`account`]).
+
+mod account;
 
 use benilla_app::BuildId;
 
 fn main() -> benilla_app::AppExit {
-    benilla_app::run_survivors(BuildId {
+    if std::env::args().nth(1).as_deref() == Some("--account-sql") {
+        return if account::run(std::env::args().nth(2).as_deref() == Some("password")) {
+            benilla_app::AppExit::Success
+        } else {
+            benilla_app::AppExit::error()
+        };
+    }
+    let build = BuildId {
         version: env!("CARGO_PKG_VERSION"),
         describe: env!("BENILLA_GIT_DESCRIBE"),
         sha: env!("BENILLA_GIT_SHA"),
@@ -12,5 +23,10 @@ fn main() -> benilla_app::AppExit {
         profile: env!("BENILLA_PROFILE"),
         project_dir: env!("BENILLA_PROJECT_DIR"),
         ..Default::default()
-    })
+    };
+    if std::env::args().skip(1).any(|a| a == "--classic") {
+        benilla_app::run(build)
+    } else {
+        benilla_app::run_survivors(build)
+    }
 }

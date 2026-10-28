@@ -7,6 +7,7 @@ struct SettingsView: View {
             GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
             GraphicsSettings().tabItem { Label("Graphics", systemImage: "display") }
             SoundSettings().tabItem { Label("Sound", systemImage: "speaker.wave.2") }
+            ServerSettings().tabItem { Label("Server", systemImage: "server.rack") }
             AdvancedSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
         }
         .frame(width: 520)
@@ -22,6 +23,7 @@ private struct GeneralSettings: View {
     @AppStorage(Prefs.dataPathKey) private var dataPath = ""
     @AppStorage(Prefs.afterQuitKey) private var afterQuit = AfterQuit.showLauncher.rawValue
     @AppStorage(Prefs.skipLauncherKey) private var skipLauncher = false
+    @AppStorage(Prefs.installAddonsKey) private var installAddons = true
 
     var body: some View {
         Form {
@@ -45,6 +47,14 @@ private struct GeneralSettings: View {
                     Button("Verify Game Files") { data.verify() }
                         .disabled(data.isBusy || game.running)
                 }
+            }
+
+            Section("Classic Addons") {
+                Toggle(isOn: $installAddons) {
+                    Text("Install AzerothPlus and AzerothAdmin")
+                    Text("AzerothPlus: a cooldown manager, a damage meter, a swing timer and a personal resource display (/ap). AzerothAdmin: game master tools for an administrator on your own server (/aa).")
+                }
+                Button("Show AddOns Folder") { reveal(Addons.folder) }
             }
 
             Section("Launching") {

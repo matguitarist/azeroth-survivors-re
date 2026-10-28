@@ -110,6 +110,10 @@ ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
        "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 cp scripts/data-manifest.tsv "$APP/Contents/Resources/"
+# Classic on this Mac: the compose file and server configs `LocalServer.swift` installs.
+ditto macos/Server "$APP/Contents/Resources/Server"
+# Classic's shipped addons, installed into the game's AddOns folder by `Addons.swift`.
+ditto addons "$APP/Contents/Resources/AddOns"
 
 # Key art and icon from the README's screenshots.
 shot=docs/screenshots/combat.jpg

@@ -46,6 +46,7 @@ final class GameProcess: ObservableObject {
             let p = Process()
             p.executableURL = Paths.gameBinary
             p.currentDirectoryURL = Paths.support
+            if GameMode.current == .classic { p.arguments = ["--classic"] }
             var env = ProcessInfo.processInfo.environment
             env["WOW_DATA"] = Paths.data.path
             env["BENILLA_HOME"] = Paths.gameConfig.path

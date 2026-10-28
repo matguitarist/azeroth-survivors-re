@@ -14,6 +14,7 @@ dev = ["benilla-app/dev"]
 
 [dependencies]
 benilla-app = { path = "../benilla-app", default-features = false }
+benilla-srp = { path = "../benilla-srp" }
 
 [build-dependencies]
 benilla-buildstamp = { path = "../benilla-buildstamp" }
@@ -21,4 +22,3 @@ benilla-buildstamp = { path = "../benilla-buildstamp" }
 [[bin]]
 name = "warcraft-survivors"
 path = "src/main.rs"
-test = false

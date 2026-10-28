@@ -41,6 +41,11 @@ enum Prefs {
     static let dataURLKey = "dataURL"
     static let afterQuitKey = "afterQuit"
     static let skipLauncherKey = "skipLauncher"
+    static let modeKey = "mode"
+    static let classicServerKey = "classicServer"
+    static let remoteServerKey = "remoteServer"
+    static let keepServerKey = "keepServerRunning"
+    static let installAddonsKey = "installAddons"
 
     static let defaultDataURL = "https://archive.org/download/WoW_1.12.1-5875/1.12.1-5875_enUS.zip"
 
@@ -50,6 +55,42 @@ enum Prefs {
         let s = UserDefaults.standard.string(forKey: dataURLKey) ?? ""
         return URL(string: s.isEmpty ? defaultDataURL : s) ?? URL(string: defaultDataURL)!
     }
+}
+
+/// Which game Play starts: the survivors mode, or the original game on a 1.12 server.
+enum GameMode: String, CaseIterable, Identifiable {
+    case survivors, classic
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .survivors: "Survivors"
+        case .classic: "Classic"
+        }
+    }
+    static var current: GameMode {
+        GameMode(rawValue: UserDefaults.standard.string(forKey: Prefs.modeKey) ?? "") ?? .survivors
+    }
+}
+
+/// Where Classic plays: the launcher's own server on this Mac, or one at an address.
+enum ClassicServer: String, CaseIterable, Identifiable {
+    case local, remote
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .local: "On this Mac"
+        case .remote: "Another server"
+        }
+    }
+    static var current: ClassicServer {
+        ClassicServer(rawValue: UserDefaults.standard.string(forKey: Prefs.classicServerKey) ?? "") ?? .local
+    }
+}
+
+/// The game's `realmList` cvar: the logon server Classic dials.
+enum Realm {
+    static let cvar = "realmList"
+    static let fallback = "localhost"
 }
 
 /// What the launcher does when the game quits.

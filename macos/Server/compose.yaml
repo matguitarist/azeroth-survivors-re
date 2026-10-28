@@ -1,0 +1,135 @@
+# The launcher's local 1.12.1 server: vmangos, from vmangos-deploy's prebuilt images
+# (https://github.com/mserajnik/vmangos-deploy). This file, `mangosd.conf` and `realmd.conf` start
+# from that project's CC0 examples. The launcher copies them into
+# ~/Library/Application Support/Azeroth Survivors/Server and runs `docker compose` there, with
+# CLIENT_DATA set to the game's Data folder. Ports bind to this Mac only.
+
+name: azeroth-survivors
+
+services:
+  database:
+    image: ghcr.io/mserajnik/vmangos-database
+    restart: 'no'
+    stop_grace_period: 2m # Gives a running startup step time to finish during shutdown.
+    healthcheck:
+      test: ['CMD', 'vmangos-healthcheck']
+      interval: 1m
+      timeout: 3s
+      retries: 5
+      start_period: 24h
+      start_interval: 2s
+    volumes:
+      - vmangos-database:/var/lib/mysql
+      - ./storage/database/custom-sql:/sql/custom:ro
+    environment:
+      - VMANGOS_DEPLOY_VERSION=1
+      - TZ=Etc/UTC
+      - MARIADB_USER=mangos
+      - MARIADB_PASSWORD=mangos
+      - MARIADB_ROOT_PASSWORD=password # Not published: the database is reachable from the containers only.
+      - VMANGOS_REALMLIST_NAME=Azeroth
+      - VMANGOS_REALMLIST_ADDRESS=127.0.0.1
+      - VMANGOS_REALMLIST_PORT=8085
+      - VMANGOS_REALMLIST_ICON=0 # Normal
+      - VMANGOS_REALMLIST_TIMEZONE=0
+      - VMANGOS_REALMLIST_ALLOWED_SECURITY_LEVEL=0
+      - VMANGOS_ENABLE_AUTOMATIC_WORLD_DB_CORRECTIONS=1
+      - VMANGOS_HALT_ON_MIGRATION_EDITS=1
+      - VMANGOS_PROCESS_CUSTOM_SQL=1
+
+  realmd:
+    image: ghcr.io/mserajnik/vmangos-server:5875
+    command: realmd
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: 'no'
+    healthcheck:
+      test: ['CMD', 'nc', '-z', 'localhost', '3724']
+      interval: 1m
+      timeout: 3s
+      retries: 5
+      start_period: 5m
+      start_interval: 2s
+    ports:
+      - 127.0.0.1:3724:3724
+    volumes:
+      - ./config/realmd.conf:/opt/vmangos/config/realmd.conf:ro
+      - ./storage/realmd/logs:/opt/vmangos/storage/logs
+    environment:
+      - VMANGOS_DEPLOY_VERSION=1
+      - TZ=Etc/UTC
+      - VMANGOS_UID=1000
+      - VMANGOS_GID=1000
+      - VMANGOS_DATABASE_USER=mangos
+      - VMANGOS_DATABASE_PASSWORD=mangos
+
+  mangosd:
+    image: &mangosd-image ghcr.io/mserajnik/vmangos-server:5875
+    command: mangosd
+    tty: true
+    stdin_open: true
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: 'no'
+    stop_grace_period: 2m # Gives the server time to save characters.
+    healthcheck:
+      test: ['CMD', 'nc', '-z', 'localhost', '8085']
+      interval: 1m
+      timeout: 3s
+      retries: 5
+      start_period: 5m
+      start_interval: 2s
+    ports:
+      - 127.0.0.1:8085:8085
+    volumes:
+      - ./config/mangosd.conf:/opt/vmangos/config/mangosd.conf:ro
+      - ./storage/mangosd/extracted-data:/opt/vmangos/storage/data:ro
+      - ./storage/mangosd/logs:/opt/vmangos/storage/logs
+      - ./storage/mangosd/honor:/opt/vmangos/storage/honor
+    environment: &mangosd-environment
+      - VMANGOS_DEPLOY_VERSION=1
+      - TZ=Etc/UTC
+      - VMANGOS_UID=1000
+      - VMANGOS_GID=1000
+      - VMANGOS_DATABASE_USER=mangos
+      - VMANGOS_DATABASE_PASSWORD=mangos
+
+  # The quick extraction: terrain heights and DBC files, in seconds. The server runs on them with
+  # line of sight and pathing off (`mangosd.conf`, `vmap.*` and `mmap.enabled`).
+  extract-maps:
+    image: *mangosd-image
+    profiles: ['tools']
+    working_dir: /opt/vmangos/storage/client-data
+    entrypoint:
+      - /bin/sh
+      - -euc
+      - |
+        rm -rf ./Buildings ./Cameras ./dbc ./maps
+        /opt/vmangos/bin/Extractors/MapExtractor --silent
+        rm -rf ./Cameras /opt/vmangos/storage/data/maps /opt/vmangos/storage/data/5875
+        mv ./maps /opt/vmangos/storage/data/
+        mkdir -p /opt/vmangos/storage/data/5875
+        mv ./dbc /opt/vmangos/storage/data/5875/
+    volumes:
+      - ./storage/mangosd/client-data:/opt/vmangos/storage/client-data
+      - ${CLIENT_DATA:-./storage/mangosd/client-data/Data}:/opt/vmangos/storage/client-data/Data:ro
+      - ./storage/mangosd/extracted-data:/opt/vmangos/storage/data
+    environment: *mangosd-environment
+
+  # The full extraction, line of sight and pathing as well: hours. It writes beside the live data,
+  # which the launcher swaps for it at a start once it completes; run as its own project
+  # (`azeroth-survivors-tools`), so stopping the server leaves it running.
+  extract-client-data:
+    image: *mangosd-image
+    profiles: ['tools']
+    entrypoint: ['extract-client-data', '--force']
+    volumes:
+      - ./storage/mangosd/client-data:/opt/vmangos/storage/client-data
+      - ${CLIENT_DATA:-./storage/mangosd/client-data/Data}:/opt/vmangos/storage/client-data/Data:ro
+      - ./storage/extract-full:/opt/vmangos/storage/data
+    environment: *mangosd-environment
+
+volumes:
+  vmangos-database:

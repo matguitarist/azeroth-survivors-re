@@ -8,6 +8,7 @@ struct LauncherApp: App {
     @StateObject private var game = GameProcess()
     @StateObject private var config = GameConfig()
     @StateObject private var updater = Updater()
+    @ObservedObject private var server = LocalServer.shared
 
     var body: some Scene {
         Window(Paths.appName, id: "launcher") {
@@ -16,6 +17,7 @@ struct LauncherApp: App {
                 .environmentObject(game)
                 .environmentObject(config)
                 .environmentObject(updater)
+                .environmentObject(server)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
@@ -28,7 +30,7 @@ struct LauncherApp: App {
             CommandMenu("Game") {
                 Button("Play") { play() }
                     .keyboardShortcut("p")
-                    .disabled(data.state != .ready || game.running)
+                    .disabled(data.state != .ready || game.running || !Launcher.canPlay(server: server))
                 Divider()
                 Button("Verify Game Files") { data.verify() }
                     .disabled(data.isBusy || game.running)
@@ -43,11 +45,12 @@ struct LauncherApp: App {
                 .environmentObject(game)
                 .environmentObject(config)
                 .environmentObject(updater)
+                .environmentObject(server)
         }
     }
 
     private func play() {
-        Launcher.play(game: game)
+        Launcher.play(game: game, config: config)
     }
 }
 
@@ -56,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Closing the launcher's window quits it, except while it is hidden behind a game session.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         !Launcher.inSession
+    }
+
+    /// The local server stops with the launcher, unless Settings keeps it running.
+    func applicationWillTerminate(_ notification: Notification) {
+        if !UserDefaults.standard.bool(forKey: Prefs.keepServerKey) { LocalServer.shared.stopDetached() }
     }
 }
 
@@ -67,7 +75,36 @@ enum Launcher {
     /// Reopens the launcher's window should SwiftUI have released it (set by `LauncherView`).
     static var openLauncher: (() -> Void)?
 
-    static func play(game: GameProcess) {
+    /// Play, as the launcher is set: Survivors; Classic at an address; or Classic on this Mac,
+    /// starting its server first when it is not up yet.
+    static func play(game: GameProcess, config: GameConfig) {
+        guard !game.running else { game.activate(); return }
+        guard GameMode.current == .classic else { start(game); return }
+        Addons.sync()
+        switch ClassicServer.current {
+        case .remote:
+            let address = (UserDefaults.standard.string(forKey: Prefs.remoteServerKey) ?? "")
+                .trimmingCharacters(in: .whitespaces)
+            config.set(Realm.cvar, address.isEmpty ? Realm.fallback : address, default: Realm.fallback)
+            start(game)
+        case .local:
+            let server = LocalServer.shared
+            Task { @MainActor in
+                await server.start()
+                guard server.phase == .running, !game.running else { return }
+                config.set(Realm.cvar, LocalServer.address, default: Realm.fallback)
+                start(game)
+            }
+        }
+    }
+
+    /// Classic on this Mac plays once its server is set up and holds an account.
+    static func canPlay(server: LocalServer) -> Bool {
+        guard GameMode.current == .classic, ClassicServer.current == .local else { return true }
+        return server.isSetUp && !server.isBusy && !server.accounts.isEmpty
+    }
+
+    private static func start(_ game: GameProcess) {
         game.launch()
         guard game.running else { return }
         inSession = true
