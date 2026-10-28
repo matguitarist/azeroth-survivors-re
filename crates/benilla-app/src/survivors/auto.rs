@@ -43,6 +43,8 @@ pub(super) struct Auto {
     /// `<class>:chars`: make three characters, show character select, both create steps and the
     /// delete dialog, then quit.
     chars: bool,
+    /// `<class>:loading`: hold the boot loading screen up, show it, then quit.
+    loading: bool,
     /// Seconds the loading screen has covered the menu, for `:zones`' veil shots.
     veil_t: f32,
     /// `:merchant`: the seconds since the rare elite fell.
@@ -91,6 +93,7 @@ pub(super) fn from_env() -> Option<Auto> {
     let zones = mode.eq_ignore_ascii_case("zones");
     let map_shot = mode.eq_ignore_ascii_case("map");
     let chars = mode.eq_ignore_ascii_case("chars");
+    let loading = mode.eq_ignore_ascii_case("loading");
     let class = data::CLASSES
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(name))
@@ -123,6 +126,7 @@ pub(super) fn from_env() -> Option<Auto> {
         zones_left: if zones { data::MAPS.len() } else { 0 },
         map_shot,
         chars,
+        loading,
         veil_t: 0.0,
         rare_gone: 0.0,
         frames: 0,
@@ -443,7 +447,21 @@ pub(super) fn extra(
         ResMut<super::menu::NameDraft>,
     ),
     (mut exit, mut chars_t): (MessageWriter<AppExit>, Local<f32>),
+    mut screen: ResMut<crate::loading_screen::LoadingScreen>,
 ) {
+    if auto.loading {
+        *chars_t += time.delta_secs();
+        if *chars_t < 1.0 {
+            screen.hold_for_capture(Some(selection.stage_def().map));
+        }
+        if *chars_t > 8.0 {
+            auto.capture_once(&mut commands, "loading".into());
+        }
+        if *chars_t > 10.0 {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
     // A run needs a character to count for: a fresh account gets one, of the class driven.
     let look = selection.look.and_then(|i| selection.looks.get(i));
     if let (Phase::Menu, true, Some(class), Some(&(_, race, sex))) =

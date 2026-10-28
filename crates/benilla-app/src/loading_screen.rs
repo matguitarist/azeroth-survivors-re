@@ -167,6 +167,9 @@ pub(crate) struct LoadingScreen {
     /// Survivors' pick screen: the screen still raises and clears, and [`Self::covering`] still
     /// says so, but nothing is drawn and no input is taken; the mode veils its own world.
     quiet: bool,
+    /// Survivors' full-window art for the place being loaded, drawn edge to edge in place of the
+    /// 4:3 backdrop ([`Self::set_wide_art`]).
+    wide_art: Option<Handle<Image>>,
 }
 
 impl LoadingScreen {
@@ -179,6 +182,13 @@ impl LoadingScreen {
     pub(crate) fn set_quiet(&mut self, quiet: bool) {
         if self.quiet != quiet {
             self.quiet = quiet;
+        }
+    }
+
+    /// Draw `art` across the whole window instead of the 4:3 backdrop, or go back to it.
+    pub(crate) fn set_wide_art(&mut self, art: Option<Handle<Image>>) {
+        if self.wide_art != art {
+            self.wide_art = art;
         }
     }
 
@@ -268,6 +278,13 @@ impl LoadingScreen {
 struct LoadingRoot;
 #[derive(Component)]
 struct LoadingBackdrop;
+/// The whole window behind the 4:3 area: the wide art, or the backdrop's own 16:9 band, dimmed,
+/// so a wide window shows the place instead of black bars.
+#[derive(Component)]
+struct LoadingWide;
+/// The wide art's shades, top and bottom.
+#[derive(Component)]
+struct LoadingShade;
 #[derive(Component)]
 struct LoadingBarFill;
 #[derive(Component)]
@@ -287,7 +304,13 @@ impl Plugin for LoadingScreenPlugin {
             .add_systems(Startup, setup_loading_screen.after(AssetSet::Open))
             // In `WorldStage::Present`, after Input and Stream: a teleport snaps in Input and the
             // streamer refocuses in Stream, so the cover lands on the same frame, never a flash.
-            .add_systems(Update, drive_loading_screen.in_set(WorldStage::Present));
+            .add_systems(Update, drive_loading_screen.in_set(WorldStage::Present))
+            .add_systems(
+                Update,
+                drive_wide_art
+                    .after(drive_loading_screen)
+                    .in_set(WorldStage::Present),
+            );
         // The cover's input rule, registered here so the two cannot be registered apart.
         input::build(app);
     }
@@ -344,6 +367,47 @@ fn setup_loading_screen(
     let fill = tex("Interface\\Glues\\LoadingBar\\Loading-BarFill.blp").unwrap_or_default();
 
     commands.entity(root).with_children(|root| {
+        root.spawn((
+            LoadingWide,
+            ImageNode {
+                color: Color::NONE,
+                image_mode: NodeImageMode::Stretch,
+                ..default()
+            },
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+        ))
+        .with_children(|wide| {
+            // A shade along the top and the bottom, under the title and the tip and bar.
+            for (top, gradient) in [
+                (
+                    true,
+                    LinearGradient::to_bottom as fn(Vec<ColorStop>) -> LinearGradient,
+                ),
+                (false, LinearGradient::to_top),
+            ] {
+                wide.spawn((
+                    LoadingShade,
+                    Visibility::Hidden,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: if top { Val::Px(0.0) } else { Val::Auto },
+                        bottom: if top { Val::Auto } else { Val::Px(0.0) },
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(if top { 26.0 } else { 34.0 }),
+                        ..default()
+                    },
+                    BackgroundGradient::from(gradient(vec![
+                        ColorStop::percent(Color::srgba(0.0, 0.0, 0.0, 0.7), 0.0),
+                        ColorStop::percent(Color::srgba(0.0, 0.0, 0.0, 0.0), 100.0),
+                    ])),
+                ));
+            }
+        });
         // One 4:3 area fit to the viewport height and centred; the bar's fractions are relative
         // to it. Paint order is spawn order: backdrop, tip, fill, border.
         root.spawn(Node {
@@ -685,6 +749,63 @@ fn drive_loading_screen(
     let frac = screen.displayed;
     if let Ok(mut node) = fill.single_mut() {
         node.width = Val::Percent(frac * FILL_MAX_WIDTH * 100.0);
+    }
+}
+
+/// The wide layer: the wide art over everything else's place, the 4:3 backdrop cleared under it;
+/// without it, the backdrop's middle 16:9 band dimmed behind the backdrop itself.
+fn drive_wide_art(
+    screen: Res<LoadingScreen>,
+    images: Res<Assets<Image>>,
+    mut wide: Query<&mut ImageNode, (With<LoadingWide>, Without<LoadingBackdrop>)>,
+    mut shades: Query<&mut Visibility, With<LoadingShade>>,
+    mut backdrop: Query<&mut ImageNode, (With<LoadingBackdrop>, Without<LoadingWide>)>,
+) {
+    if !screen.active || screen.blackout || screen.quiet {
+        return;
+    }
+    let (Ok(mut wide), Ok(mut back)) = (wide.single_mut(), backdrop.single_mut()) else {
+        return;
+    };
+    // The shades are the wide art's only: on the 4:3 backdrop's own band they would darken it twice.
+    let shown = if screen.wide_art.is_some() {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut vis in &mut shades {
+        if *vis != shown {
+            *vis = shown;
+        }
+    }
+    let (image, rect, color, back_color) = match (&screen.wide_art, screen.art_resolved) {
+        (Some(art), _) => (art.clone(), None, Color::WHITE, Color::NONE),
+        (None, true) => {
+            let band = images.get(&back.image).map(|i| {
+                let (w, h) = (i.width() as f32, i.height() as f32);
+                let bh = (w * 9.0 / 16.0).min(h);
+                Rect::new(0.0, (h - bh) / 2.0, w, (h + bh) / 2.0)
+            });
+            (
+                back.image.clone(),
+                band,
+                Color::srgb(0.3, 0.3, 0.3),
+                Color::WHITE,
+            )
+        }
+        (None, false) => (Handle::default(), None, Color::NONE, back.color),
+    };
+    if wide.image != image {
+        wide.image = image;
+    }
+    if wide.rect != rect {
+        wide.rect = rect;
+    }
+    if wide.color != color {
+        wide.color = color;
+    }
+    if back.color != back_color {
+        back.color = back_color;
     }
 }
 

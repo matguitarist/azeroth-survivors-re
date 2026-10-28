@@ -24,6 +24,7 @@ mod pad;
 mod panels;
 mod profile;
 mod units;
+mod postcard;
 mod worldmap;
 
 use benilla_world::schedule::WorldStage;
@@ -110,6 +111,14 @@ impl Plugin for SurvivorsPlugin {
             .add_systems(Update, hud::refresh_bar_info.after(hud::refresh_hud))
             .init_resource::<menu::MenuStep>()
             .init_resource::<menu::NameDraft>()
+            .init_resource::<postcard::Postcards>()
+            .add_systems(Startup, postcard::boot_stage)
+            .add_systems(
+                Update,
+                (postcard::take_postcard, postcard::show_postcard)
+                    .chain()
+                    .after(hud::show_panels),
+            )
             .init_resource::<menu::DeleteOpen>()
             .add_systems(
                 PreUpdate,

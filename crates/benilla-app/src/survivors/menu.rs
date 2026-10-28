@@ -1538,6 +1538,13 @@ pub(super) struct StageVeil {
     alpha: f32,
 }
 
+impl StageVeil {
+    /// How far the veil is down, 0 (the world in full view) to 1.
+    pub(super) fn alpha(&self) -> f32 {
+        self.alpha
+    }
+}
+
 #[derive(Component)]
 pub(super) struct VeilNode;
 #[derive(Component)]
