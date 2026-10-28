@@ -121,6 +121,15 @@ private struct Cvar {
                 set: { config.set(name, format($0), default: def) })
     }
 
+    /// One of the game's own steps for this cvar, `(value, label)`: reads the nearest step, as the
+    /// game's Settings arrows do, so a value set elsewhere still shows.
+    func stop(_ stops: [(String, String)]) -> Binding<String> {
+        Binding(get: {
+            let now = Double(config.value(name, default: def)) ?? 0
+            return stops.min { abs((Double($0.0) ?? 0) - now) < abs((Double($1.0) ?? 0) - now) }?.0 ?? def
+        }, set: { config.set(name, $0, default: def) })
+    }
+
     /// Up to two decimals, no trailing zeros: 1 → "1", 0.4 → "0.4".
     nonisolated static func short(_ v: Double) -> String {
         var s = String(format: "%.2f", v)
@@ -148,29 +157,41 @@ private struct GameSettingsForm<Content: View>: View {
     }
 }
 
-/// One-click graphics levels: each sets the same six cvars. Balanced is the game's defaults.
+/// The game's own Settings steps (`survivors/panels.rs`, `CHOICES`), so both panels offer the same.
+private enum Stops {
+    static let offOn = [("0", "Off"), ("1", "On")]
+    static let lowHigh = [("0", "Low"), ("1", "Medium"), ("2", "High")]
+    static let multisample = [("1", "Off"), ("2", "2×"), ("4", "4×"), ("8", "8×")]
+    static let renderScale = [("0.5", "50%"), ("0.75", "75%"), ("1", "100%"), ("1.5", "150%"), ("2", "200%")]
+    static let farclip = ["177", "277", "350", "477", "577", "677", "777"].map { ($0, "\($0) yd") }
+    static let weather = [("0", "Low"), ("1", "Medium"), ("2", "High"), ("3", "Ultra")]
+    static let anisotropic = [("1", "Bilinear"), ("2", "2× anisotropic"), ("4", "4× anisotropic"),
+                              ("8", "8× anisotropic"), ("16", "16× anisotropic")]
+}
+
+/// One-click graphics levels: each sets the same seven cvars. Balanced is the game's defaults.
 private enum QualityPreset: String, CaseIterable, Identifiable {
     case performance = "Performance", balanced = "Balanced", quality = "Quality"
     var id: String { rawValue }
 
     /// The cvars a preset owns, with each one's default: render scale, MSAA, anisotropy, view
-    /// distance, ground clutter, weather.
+    /// distance, ground clutter, weather, spell detail. Every value is one of [`Stops`].
     static let keys: [(name: String, def: String)] = [
         ("renderScale", "1"), ("gxMultisample", "1"), ("anisotropic", "1"),
-        ("farclip", "350"), ("WorldDetail", "1"), ("useWeatherShaders", "1"),
+        ("farclip", "350"), ("WorldDetail", "1"), ("weatherDensity", "3"), ("spellEffectLevel", "2"),
     ]
 
     var values: [String] {
         switch self {
-        case .performance: ["0.75", "1", "1", "250", "0", "0"]
-        case .balanced: ["1", "1", "1", "350", "1", "1"]
-        case .quality: ["1", "1", "16", "550", "2", "1"]
+        case .performance: ["0.75", "1", "1", "277", "0", "1", "1"]
+        case .balanced: ["1", "1", "1", "350", "1", "3", "2"]
+        case .quality: ["1", "1", "16", "577", "2", "3", "2"]
         }
     }
 
     var summary: String {
         switch self {
-        case .performance: "75% render scale, shorter view distance, no clutter or weather. For older Macs or long battery play."
+        case .performance: "75% render scale, shorter view distance, no ground clutter, lighter weather and spells. For older Macs or long battery play."
         case .balanced: "Native resolution and the game's standard view distance."
         case .quality: "16× texture filtering, long view distance, dense ground clutter. Anti-aliasing stays separate: at Retina resolutions it costs about as much as everything else together."
         }
@@ -197,10 +218,6 @@ private struct GraphicsSettings: View {
 
     var body: some View {
         let c = { (name: String, def: String) in Cvar(config: config, name: name, def: def) }
-        let windowed = c("gxWindow", "0")
-        let scale = c("renderScale", "1").number()
-        let farclip = c("farclip", "350").number { String(Int($0.rounded())) }
-
         let preset = QualityPreset.current(in: config)
 
         GameSettingsForm {
@@ -217,63 +234,54 @@ private struct GraphicsSettings: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Display") {
-                Picker("Mode", selection: windowed.string) {
-                    Text("Fullscreen").tag("0")
-                    Text("Window").tag("1")
+            // The rows of the game's own Settings > Video, in its order.
+            Section("Video") {
+                Picker("Display", selection: display) {
+                    Text("Fullscreen").tag(0)
+                    Text("Windowed").tag(1)
+                    Text("Maximized").tag(2)
                 }
                 .pickerStyle(.segmented)
-                if windowed.bool.wrappedValue {
+                if display.wrappedValue == 1 {
                     Picker("Window size", selection: c("gxResolution", "1600x900").string) {
                         ForEach(Self.sizes, id: \.self) { Text($0.replacingOccurrences(of: "x", with: " × ")).tag($0) }
                     }
                 }
                 Toggle("Vertical sync", isOn: c("gxVSync", "1").bool)
-                LabeledContent("Render scale") {
-                    HStack {
-                        Slider(value: scale, in: 0.5...2, step: 0.05)
-                        Text("\(Int((scale.wrappedValue * 100).rounded()))%")
-                            .monospacedDigit()
-                            .frame(width: 44, alignment: .trailing)
-                    }
-                }
-                Text("Below 100% renders the 3D world at a lower resolution for speed; the interface stays sharp.")
+                stops("Anti-aliasing", c("gxMultisample", "1"), Stops.multisample)
+                stops("Render scale", c("renderScale", "1"), Stops.renderScale)
+                stops("View distance", c("farclip", "350"), Stops.farclip)
+                stops("Ground clutter", c("WorldDetail", "1"), Stops.lowHigh)
+                stops("Spell detail", c("spellEffectLevel", "2"), Stops.lowHigh)
+                stops("Weather", c("weatherDensity", "3"), Stops.weather)
+                Toggle("Full-screen glow", isOn: c("ffxGlow", "1").bool)
+                stops("Texture filtering", c("anisotropic", "1"), Stops.anisotropic)
+                Text("Render scale below 100% draws the 3D world at a lower resolution for speed; the interface stays sharp.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Quality") {
-                Picker("Anti-aliasing", selection: c("gxMultisample", "1").string) {
-                    Text("Off").tag("1")
-                    Text("2×").tag("2")
-                    Text("4×").tag("4")
-                    Text("8×").tag("8")
-                }
-                Picker("Texture filtering", selection: c("anisotropic", "1").string) {
-                    Text("Bilinear").tag("1")
-                    Text("2× anisotropic").tag("2")
-                    Text("4× anisotropic").tag("4")
-                    Text("8× anisotropic").tag("8")
-                    Text("16× anisotropic").tag("16")
-                }
-                LabeledContent("View distance") {
-                    HStack {
-                        Slider(value: farclip, in: 177...777, step: 25)
-                        Text("\(Int(farclip.wrappedValue)) yd")
-                            .monospacedDigit()
-                            .frame(width: 54, alignment: .trailing)
-                    }
-                }
-                Picker("Ground clutter", selection: c("WorldDetail", "1").string) {
-                    Text("Low").tag("0")
-                    Text("Medium").tag("1")
-                    Text("High").tag("2")
-                }
-                Toggle("Weather effects", isOn: c("useWeatherShaders", "1").bool)
+            Section {
                 LabeledContent("Gamma") {
                     Slider(value: c("gamma", "1.000000").number { String(format: "%.6f", $0) }, in: 0.5...1.5)
                 }
             }
+        }
+    }
+
+    /// Fullscreen, windowed or maximized: `gxWindow` and `gxMaximize` together, as in the game.
+    private var display: Binding<Int> {
+        Binding(get: {
+            guard config.value("gxWindow", default: "0") != "0" else { return 0 }
+            return config.value("gxMaximize", default: "0") != "0" ? 2 : 1
+        }, set: { at in
+            config.set([("gxWindow", at == 0 ? "0" : "1", "0"), ("gxMaximize", at == 2 ? "1" : "0", "0")])
+        })
+    }
+
+    private func stops(_ label: String, _ cvar: Cvar, _ stops: [(String, String)]) -> some View {
+        Picker(label, selection: cvar.stop(stops)) {
+            ForEach(stops, id: \.0) { Text($0.1).tag($0.0) }
         }
     }
 }
@@ -286,15 +294,15 @@ private struct SoundSettings: View {
 
         GameSettingsForm {
             Section("Volume") {
-                volume("Master", c("MasterVolume", "1"))
-                volume("Effects", c("SoundVolume", "1"))
+                volume("Master volume", c("MasterVolume", "1"))
+                volume("Sound effects", c("SoundVolume", "1"))
                 volume("Music", c("MusicVolume", "0.4"))
                 volume("Ambience", c("AmbienceVolume", "0.6"))
             }
             Section {
-                Toggle("Sound effects", isOn: c("MasterSoundEffects", "1").bool)
-                Toggle("Music", isOn: c("EnableMusic", "1").bool)
-                Toggle("Ambient sounds", isOn: c("EnableAmbience", "1").bool)
+                Toggle("Play sound effects", isOn: c("MasterSoundEffects", "1").bool)
+                Toggle("Play music", isOn: c("EnableMusic", "1").bool)
+                Toggle("Play ambient sounds", isOn: c("EnableAmbience", "1").bool)
                 Toggle("Play sound when the game is in the background", isOn: c("Sound_EnableSoundWhenGameIsInBG", "0").bool)
             }
         }
@@ -304,7 +312,7 @@ private struct SoundSettings: View {
         let value = cvar.number()
         return LabeledContent(label) {
             HStack {
-                Slider(value: value, in: 0...1, step: 0.05)
+                Slider(value: value, in: 0...1, step: 0.1)
                 Text("\(Int((value.wrappedValue * 100).rounded()))%")
                     .monospacedDigit()
                     .frame(width: 44, alignment: .trailing)
