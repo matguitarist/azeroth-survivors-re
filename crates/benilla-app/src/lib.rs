@@ -187,7 +187,6 @@ mod ui_world_map;
 mod video;
 mod vplates;
 mod weapon_trail;
-mod webbridge;
 /// The web build's env-var stand-in (a browser tab has no process environment) — see the
 /// module doc. `pub` because the plan's "Env/config on web" interface names it as
 /// `benilla_app::webenv::var` by that exact path; every in-crate caller still just writes
@@ -443,8 +442,6 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     if survivors {
         app.add_plugins(survivors::SurvivorsPlugin);
     }
-
-    app.add_plugins(webbridge::WebBridgePlugin);
 
     // benilla-assets' loaders go into the live `AssetServer`, so they register after `AssetPlugin`.
     benilla_assets::register_asset_loaders(&mut app);

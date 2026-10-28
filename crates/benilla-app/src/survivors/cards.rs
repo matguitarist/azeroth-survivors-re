@@ -209,6 +209,9 @@ pub(super) fn deal_cards(
                     row_gap: Val::Px(6.0),
                     border: UiRect::all(Val::Px(2.0)),
                     border_radius: BorderRadius::all(Val::Px(10.0)),
+                    // The landing shine waits left of the card and rests right of it: only its
+                    // sweep across may show.
+                    overflow: Overflow::clip(),
                     ..default()
                 },
                 BorderColor::all(rc),
@@ -510,8 +513,10 @@ pub(super) fn choose_card(
     phase: Res<State<Phase>>,
     keys: Res<ButtonInput<KeyCode>>,
     cards: Query<(&Card, &Interaction), Changed<Interaction>>,
-    offer: Res<Offer>,
+    mut offer: ResMut<Offer>,
     mut pending: ResMut<PendingPick>,
+    mut run: ResMut<Run>,
+    mut rng: ResMut<Rng>,
 ) {
     if *phase.get() != Phase::LevelUp || pending.0.is_some() {
         return;
@@ -528,7 +533,13 @@ pub(super) fn choose_card(
             pick = Some(i);
         }
     }
-    if let Some(i) = pick.filter(|&i| i < offer.len()) {
+    let Some(i) = pick.filter(|&i| i < offer.len()) else {
+        return;
+    };
+    if run.banishing {
+        // A card that cannot be banished is not taken either: the mode waits for one that can.
+        hud::banish(i, &mut run, &mut offer, &mut rng);
+    } else {
         pending.0 = Some((i, 0.0));
     }
 }

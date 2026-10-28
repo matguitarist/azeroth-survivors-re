@@ -521,6 +521,12 @@ pub(super) fn compose(
             if off.length() > radius {
                 continue;
             }
+            // Bosses and rare elites stand out.
+            let size = if enemy.boss || enemy.rare {
+                size * 1.8
+            } else {
+                size
+            };
             blit(buf, center + off / yd_per_px, size, |q| {
                 let f = q / size + 0.5;
                 let x = (l + (r - l) * f.x) * icons.w as f32;

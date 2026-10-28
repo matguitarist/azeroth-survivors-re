@@ -1,0 +1,144 @@
+# Build, sign, notarize and publish the macOS app when a version tag (v1.2.3) is pushed. The
+# release carries the dmg (first install), the zip and appcast.xml (Sparkle updates): installed
+# apps read https://github.com/<repo>/releases/latest/download/appcast.xml. A suffixed tag
+# (v0.2.1-ci1) runs everything but publishing. See macos/README.md.
+name: macOS release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, e.g. v0.2.1"
+        required: true
+      publish:
+        description: "Upload to the tag's release (off: a dry run, kept as a workflow artifact)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  # The game per arch, each on its own runner: one fat-LTO build takes ~90 minutes on a hosted
+  # Mac (the link alone ~50), so building both in one job ran past any sane timeout.
+  game:
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build the game (ship profile, player build)
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --profile ship -p warcraft-survivors --no-default-features --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: game-${{ matrix.target }}
+          path: target/${{ matrix.target }}/ship/warcraft-survivors
+          retention-days: 3
+
+  release:
+    needs: game
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # A tag with a suffix (v0.2.1-ci1) is a dry run: built and notarized, kept as an artifact.
+      PUBLISH: ${{ (github.event_name == 'push' && !contains(github.ref_name, '-')) || github.event.inputs.publish == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Import the Developer ID certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          pass="$(uuidgen)"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$pass" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          security find-identity "$keychain" | grep "Developer ID Application"
+
+      - name: Write the Sparkle key and, if used, the notary API key
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          echo "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle.key"
+          if [ -n "$NOTARY_KEY_P8" ]; then
+            echo "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+            echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: game-*
+
+      - name: Put the games where the script expects them
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            mkdir -p "target/$t/ship"
+            mv "game-$t/warcraft-survivors" "target/$t/ship/"
+            chmod +x "target/$t/ship/warcraft-survivors"
+          done
+
+      - name: Notarize and package (universal)
+        env:
+          ARCHS: arm64 x86_64
+          PREBUILT_GAME: 1
+          # Notarization: an Apple ID with an app-specific password, or an API key (NOTARY_KEY_*).
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          SPARKLE_KEY_FILE: ${{ runner.temp }}/sparkle.key
+          GH_TOKEN: ${{ github.token }} # renders the release notes' Markdown
+        run: VERSION="${TAG#v}" scripts/macos-app.sh --release
+
+      - name: Keep the build (dry run)
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ env.TAG }}
+          path: target/macos/dist/
+
+      - name: Publish the release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            if [ -f target/macos/release-notes.md ]; then notes=(--notes-file target/macos/release-notes.md); else notes=(--generate-notes); fi
+            gh release create "$TAG" --title "Azeroth Survivors ${TAG#v}" "${notes[@]}"
+          fi
+          gh release upload "$TAG" target/macos/dist/* --clobber
+
+      - name: Clean up keys
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/sparkle.key"

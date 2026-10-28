@@ -2,8 +2,12 @@
 //! look, begins once the world is up, takes a random card at every level, walks to the nearest
 //! gem away from the crowd and logs the run every ten seconds; `WOW_SURVIVORS_SHOTS=<dir>` also
 //! saves a screenshot every few seconds, which needs no window focus. A `:idle`, `:all` or `:late`
-//! suffix on the class name changes the run, as the fields below say. `WOW_SURVIVORS_MAP=<index or
-//! name>` picks the battleground.
+//! suffix on the class name changes the run, as the fields below say; `:settings` pauses and shows
+//! each tab of Settings, for their screenshots; `:bag` opens the backpack 25 seconds in,
+//! `:merchant` the merchant on the pick screen, `:zones` stands in every zone on the pick screen
+//! before the run, and `:map` opens the world map 20 seconds in.
+//! `WOW_SURVIVORS_MAP=<index or name>` picks the battleground, and `WOW_SURVIVORS_LOOT=rich` makes
+//! coins and items drop twenty times as often.
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
@@ -26,6 +30,20 @@ pub(super) struct Auto {
     /// `<class>:late`: the whole pool at its top level, two thirds of the way in, for the crowd at
     /// its thickest.
     late: bool,
+    /// `<class>:settings`: pause a few seconds in and show each Settings tab.
+    settings: bool,
+    /// `<class>:bag`: open the backpack 25 seconds in.
+    bag: bool,
+    /// `<class>:merchant`: show the merchant before the run.
+    merchant: bool,
+    /// `<class>:zones`: the zones still to stand in at the menu, one screenshot each.
+    zones_left: usize,
+    /// `<class>:map`: open the world map 20 seconds in.
+    map_shot: bool,
+    /// Seconds the loading screen has covered the menu, for `:zones`' veil shots.
+    veil_t: f32,
+    /// `:merchant`: the seconds since the rare elite fell.
+    rare_gone: f32,
     frames: u32,
     wait: f32,
     shots: Option<std::path::PathBuf>,
@@ -64,6 +82,11 @@ pub(super) fn from_env() -> Option<Auto> {
     let idle = mode.eq_ignore_ascii_case("idle");
     let late = mode.eq_ignore_ascii_case("late");
     let all = late || mode.eq_ignore_ascii_case("all");
+    let settings = mode.eq_ignore_ascii_case("settings");
+    let bag = mode.eq_ignore_ascii_case("bag");
+    let merchant = mode.eq_ignore_ascii_case("merchant");
+    let zones = mode.eq_ignore_ascii_case("zones");
+    let map_shot = mode.eq_ignore_ascii_case("map");
     let class = data::CLASSES
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(name))
@@ -90,6 +113,13 @@ pub(super) fn from_env() -> Option<Auto> {
         idle,
         all,
         late,
+        settings,
+        bag,
+        merchant,
+        zones_left: if zones { data::MAPS.len() } else { 0 },
+        map_shot,
+        veil_t: 0.0,
+        rare_gone: 0.0,
         frames: 0,
         wait: 0.0,
         shots,
@@ -163,8 +193,12 @@ pub(super) fn drive(
     mut offer: ResMut<Offer>,
     mut rng: ResMut<Rng>,
     loading: Res<crate::loading_screen::LoadingScreen>,
-    heroes: Query<(), With<Hero>>,
-    enemies: Query<&Enemy>,
+    heroes: Query<&Transform, With<Hero>>,
+    enemies: Query<(&Enemy, &Transform), Without<Hero>>,
+    mut open: ResMut<super::panels::SettingsOpen>,
+    mut tab: ResMut<super::panels::Tab>,
+    mut bag: ResMut<super::panels::BagOpen>,
+    mut shop: ResMut<super::merchant::MerchantOpen>,
 ) {
     let dt = time.delta_secs();
     auto.wait += dt;
@@ -182,7 +216,35 @@ pub(super) fn drive(
                 selection.version += 1;
                 auto.wait = 0.0;
             } else if heroes.is_empty() || loading.covering() {
+                // `:zones` also shows the veil a move stands behind.
+                auto.veil_t = if loading.covering() {
+                    auto.veil_t + dt
+                } else {
+                    0.0
+                };
+                if auto.zones_left > 0 && auto.veil_t > 0.3 {
+                    let name = format!("veil-{}", auto.map);
+                    auto.capture_once(&mut commands, name);
+                }
                 auto.wait = 0.0;
+            } else if auto.merchant && !auto.seen.iter().any(|s| s == "merchant") {
+                shop.0 = auto.wait > 1.5;
+                if auto.wait > 3.0 {
+                    auto.capture_once(&mut commands, "merchant".into());
+                    auto.wait = 0.0;
+                }
+            } else if shop.0 {
+                shop.0 = false;
+            } else if auto.zones_left > 0 {
+                // Long enough for the ground around a new zone to stream in.
+                if auto.wait > 5.0 {
+                    let name = format!("zone-{}", auto.map);
+                    auto.capture_once(&mut commands, name);
+                    auto.map = (auto.map + 1) % data::MAPS.len();
+                    auto.zones_left -= 1;
+                    auto.wait = 0.0;
+                    auto.veil_t = 0.0;
+                }
             } else if auto.wait > 2.0 && auto.wait < 3.0 {
                 auto.capture_once(&mut commands, "menu".into());
             } else if auto.wait > 3.0 && hud::start_run(&mut run, &mut selection) {
@@ -208,6 +270,7 @@ pub(super) fn drive(
                     }
                     run.elapsed = data::VICTORY_SECS * 2.0 / 3.0;
                     run.bosses = 3;
+                    run.boss_kills = 3;
                     run.rings = 4;
                 }
                 next.set(Phase::Playing);
@@ -215,6 +278,21 @@ pub(super) fn drive(
             }
         }
         Phase::LevelUp => {
+            // `:merchant` shows the bought charges: at level 3 a banish armed, then spent.
+            if auto.merchant && run.level == 3 && auto.wait > 0.5 && run.banishes > 0 {
+                run.banishing = true;
+            }
+            if auto.merchant && run.level == 3 && auto.wait > 1.0 && run.banishing {
+                auto.capture_once(&mut commands, "banish".into());
+            }
+            if auto.merchant && run.level == 3 && auto.wait > 1.5 && run.banishing {
+                let i = (0..offer.len()).find(|&i| hud::banish_key(offer.choices()[i]).is_some());
+                if let Some(i) = i {
+                    let key = hud::banish_key(offer.choices()[i]);
+                    hud::banish(i, &mut run, &mut offer, &mut rng);
+                    info!("survivors auto: banished {key:?}, {} left", run.banishes);
+                }
+            }
             // After the deal-in, so the shot shows the cards settled.
             if auto.wait > 1.2 && (run.level <= 3 || run.level == 10) {
                 auto.capture_once(&mut commands, format!("levelup-{}", run.level));
@@ -235,6 +313,70 @@ pub(super) fn drive(
                 auto.wait = 0.0;
             }
         }
+        Phase::Playing if auto.settings => {
+            if auto.wait > 4.0 && !auto.seen.iter().any(|s| s.starts_with("settings")) {
+                next.set(Phase::Paused);
+                open.0 = true;
+                auto.wait = 0.0;
+            }
+        }
+        // `:merchant` calls a rare elite early, and shows it.
+        Phase::Playing if auto.merchant => {
+            auto.wait = 0.0;
+            if run.next_rare == 0.0 {
+                run.next_rare = 6.0;
+            }
+            let hero = heroes.single().map(|t| t.translation).unwrap_or_default();
+            let rare = enemies.iter().find(|(e, _)| e.rare);
+            // Close up while it lives; the frame after it falls, its drop under a blue beam.
+            if let Some((e, t)) = rare {
+                if !e.dead && t.translation.distance(hero) < 12.0 {
+                    auto.capture_once(&mut commands, "rare".into());
+                }
+                if e.dead {
+                    auto.rare_gone += dt;
+                    if auto.rare_gone > 0.05 {
+                        auto.capture_once(&mut commands, "rare-slain".into());
+                    }
+                }
+            }
+        }
+        Phase::Playing if auto.bag => {
+            if run.elapsed > 25.0 && !auto.seen.iter().any(|s| s == "bag") {
+                next.set(Phase::Paused);
+                bag.0 = true;
+                auto.wait = 0.0;
+            }
+        }
+        Phase::Paused if auto.bag => {
+            if auto.wait > 1.0 {
+                auto.capture_once(&mut commands, "bag".into());
+            }
+            if auto.wait > 2.0 {
+                bag.0 = false;
+                next.set(Phase::Playing);
+            }
+        }
+        Phase::Paused if auto.settings => {
+            use super::panels::Tab;
+            for (i, (t, name)) in [
+                (Tab::Video, "video"),
+                (Tab::Sound, "sound"),
+                (Tab::Controls, "controls"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let at = 1.0 + i as f32 * 1.5;
+                if auto.wait > at && auto.wait < at + 1.5 {
+                    if *tab != t {
+                        *tab = t;
+                    } else if auto.wait > at + 0.8 {
+                        auto.capture_once(&mut commands, format!("settings-{name}"));
+                    }
+                }
+            }
+        }
         _ => auto.wait = 0.0,
     }
 
@@ -243,7 +385,7 @@ pub(super) fn drive(
         auto.log_t = 10.0;
         let fps = auto.frames as f32 / 10.0;
         auto.frames = 0;
-        let alive = enemies.iter().filter(|e| !e.dead).count();
+        let alive = enemies.iter().filter(|(e, _)| !e.dead).count();
         let build: Vec<String> = run
             .abilities
             .iter()
@@ -272,5 +414,47 @@ pub(super) fn drive(
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk(path));
         }
+    }
+}
+
+/// What [`drive`] has no parameters left for: `:map` opens the world map 20 seconds into the run,
+/// captures it and shuts it; `:idle` takes the results' Play Again.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn extra(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    mut auto: ResMut<Auto>,
+    phase: Res<State<Phase>>,
+    mut next: ResMut<NextState<Phase>>,
+    run: Res<Run>,
+    mut map: ResMut<super::worldmap::MapOpen>,
+    mut replay: ResMut<super::hud::Replay>,
+    mut shown: Local<f32>,
+) {
+    if auto.idle && *phase.get() == Phase::GameOver && auto.wait > 3.0 && !replay.0 {
+        info!("survivors auto: play again");
+        replay.0 = true;
+        next.set(Phase::Menu);
+        auto.wait = 0.0;
+    }
+    if !auto.map_shot {
+        return;
+    }
+    match phase.get() {
+        Phase::Playing if run.elapsed > 20.0 && !map.0 => {
+            map.0 = true;
+            next.set(Phase::Paused);
+            *shown = 0.0;
+        }
+        Phase::Paused if map.0 => {
+            *shown += time.delta_secs();
+            if *shown > 1.5 {
+                auto.capture_once(&mut commands, "worldmap".into());
+                auto.map_shot = false;
+                map.0 = false;
+                next.set(Phase::Playing);
+            }
+        }
+        _ => {}
     }
 }

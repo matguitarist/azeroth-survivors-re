@@ -6,22 +6,30 @@
 
 mod abilities;
 mod auto;
+mod bag;
+mod levelup;
 mod cards;
 mod data;
 mod enemies;
 mod fill;
+mod gear;
 mod grade;
 mod hero;
 mod hud;
 mod menu;
+mod merchant;
 mod minimap;
 mod mobility;
+mod pad;
+mod panels;
+mod profile;
 mod units;
+mod worldmap;
 
 use benilla_world::schedule::WorldStage;
 use bevy::prelude::*;
 
-use data::{AbilityDef, ClassDef, PassiveDef, Stat};
+use data::{AbilityDef, ClassDef, PassiveDef};
 
 /// Set by [`crate::run_survivors`] before the app builds. wasm32 has no process environment, so
 /// the flag lives here; `WOW_SURVIVORS` (`?survivors=1` / `__wenilla_env.survivors` on the web)
@@ -38,12 +46,75 @@ pub(crate) struct SurvivorsPlugin;
 impl Plugin for SurvivorsPlugin {
     fn build(&self, app: &mut App) {
         // Present before `OnEnter(InWorld)`, where the UI lifecycle decides not to load FrameXML.
+        // The tuned plugins leave gamepads out, as 1.12 has none; this mode reads them.
+        if !app.is_plugin_added::<bevy::gilrs::GilrsPlugin>() {
+            app.add_plugins(bevy::gilrs::GilrsPlugin);
+        }
         app.insert_resource(crate::run_mode::CaptureMode)
             .add_plugins(grade::plugin)
             .init_state::<Phase>()
             .init_resource::<Rng>()
             .init_resource::<Selection>()
             .init_resource::<Run>()
+            .init_resource::<profile::Profile>()
+            .init_resource::<gear::GearCatalog>()
+            .add_systems(Update, gear::build_catalog.before(hud::menu_preview))
+            .init_resource::<panels::SettingsOpen>()
+            .init_resource::<panels::Tab>()
+            .init_resource::<panels::BagOpen>()
+            .init_resource::<merchant::MerchantOpen>()
+            .init_resource::<worldmap::MapOpen>()
+            .init_resource::<menu::StageVeil>()
+            .init_resource::<hud::Replay>()
+            .add_systems(
+                Update,
+                (
+                    worldmap::build_map.after(panels::build_panels),
+                    worldmap::map_input.after(panels::bag_input).before(hud::keys),
+                    worldmap::fill_map.after(worldmap::map_input),
+                )
+                    .chain()
+                    .after(WorldStage::Input),
+            )
+            .add_systems(
+                Update,
+                (merchant::build_merchant, merchant::merchant)
+                    .chain()
+                    .after(menu::build_menu)
+                    .before(crate::glue::GlueVisuals),
+            )
+            .add_systems(
+                Update,
+                (levelup::build_levelup, levelup::levelup)
+                    .chain()
+                    .after(panels::build_panels)
+                    .before(cards::choose_card)
+                    .before(crate::glue::GlueVisuals),
+            )
+            .add_systems(Update, panels::keep_camera.after(WorldStage::Input))
+            .init_resource::<pad::Pad>()
+            .add_systems(PreUpdate, pad::read_pad.after(bevy::input::InputSystems))
+            .init_resource::<pad::PadFocus>()
+            .add_systems(
+                PreUpdate,
+                pad::focus
+                    .after(pad::read_pad)
+                    .after(bevy::ui::UiSystems::Focus)
+                    .before(crate::glue::glue_clicks),
+            )
+            .add_systems(Update, pad::log_pads)
+            .add_systems(
+                Update,
+                (panels::build_panels, panels::settings.before(crate::glue::GlueVisuals)),
+            )
+            .add_systems(Update, hud::refresh_bar_info.after(hud::refresh_hud))
+            .init_resource::<menu::MenuStep>()
+            .add_systems(
+                Update,
+                (menu::show_step, menu::refresh_info)
+                    .after(menu::menu_clicks)
+                    .before(crate::glue::GlueVisuals),
+            )
             .init_resource::<hero::CamRig>()
             .init_resource::<hero::AimPoint>()
             .init_resource::<abilities::PendingHits>()
@@ -78,7 +149,11 @@ impl Plugin for SurvivorsPlugin {
                     abilities::apply_hits,
                     enemies::tick_marks,
                     enemies::drop_loot,
+                    bag::drop_items,
+                    gear::boss_drops,
                     enemies::collect_gems,
+                    bag::collect_pickups,
+                    bag::use_items,
                     hero::hero_vitals,
                 )
                     .chain()
@@ -96,12 +171,14 @@ impl Plugin for SurvivorsPlugin {
                 (
                     hero::follow_map,
                     hud::menu_preview,
-                    hud::buttons,
+                    (panels::buttons, panels::bag_input).chain(),
                     hud::keys,
                     hud::refresh_menu,
                     menu::restore_pick,
                     menu::build_menu,
-                    menu::menu_clicks,
+                    menu::rebuild_zones,
+                    menu::refresh_armor,
+                    (menu::menu_clicks, menu::stage_follows_pick, menu::stage_veil).chain(),
                     menu::refresh_menu_ui.before(crate::glue::GlueVisuals),
                     cards::deal_cards,
                     cards::choose_card,
@@ -122,6 +199,8 @@ impl Plugin for SurvivorsPlugin {
                     hud::apply_ui_scale,
                     hud::fill_art,
                     hud::xp_hover,
+                    hud::refresh_items,
+                    panels::refresh_bag,
                     hud::icon_tooltip,
                     hud::hero_plate,
                     minimap::map_buttons,
@@ -134,7 +213,7 @@ impl Plugin for SurvivorsPlugin {
             .add_systems(OnEnter(Phase::Playing), unpause)
             .add_systems(OnEnter(Phase::LevelUp), (pause, hud::roll_offer))
             .add_systems(OnEnter(Phase::Paused), pause)
-            .add_systems(OnEnter(Phase::GameOver), unpause)
+            .add_systems(OnEnter(Phase::GameOver), (unpause, profile::record_run))
             .add_systems(OnEnter(Phase::Menu), (unpause, reset_run));
         if let Some(auto) = auto::from_env() {
             app.insert_resource(auto)
@@ -142,7 +221,8 @@ impl Plugin for SurvivorsPlugin {
                     Update,
                     auto::drive.after(hud::keys).before(hud::refresh_menu),
                 )
-                .add_systems(Update, auto::plan.before(WorldStage::Input));
+                .add_systems(Update, auto::plan.before(WorldStage::Input))
+                .add_systems(Update, auto::extra.after(auto::drive));
         }
     }
 }
@@ -169,11 +249,13 @@ pub(super) struct Selection {
     /// `(display, race, sex)`, one per race and sex the class's trainers come in.
     pub looks: Vec<(u32, u8, u8)>,
     pub look: Option<usize>,
+    /// The look's customization dials.
+    pub custom: units::Custom,
     /// An index into [`data::MAPS`].
     pub map: usize,
-    /// The battleground the world is standing in: the last one entered (or the saved pick at
-    /// boot). Picking another at the menu changes only `map`, so the menu hero stays put and no
-    /// loading screen rises until Enter World.
+    /// The battleground the world is standing in. At the menu it follows `map` once the pick
+    /// has rested a moment ([`menu::stage_follows_pick`]), behind a veil rather than the loading
+    /// screen, so the hero stands in the zone picked.
     pub stage: usize,
     /// Bumped on every change, so the menu rebuilds once.
     pub version: u32,
@@ -265,6 +347,14 @@ pub(super) struct Run {
     pub bosses: u32,
     pub rings: u32,
     pub won: bool,
+    /// The zone this run's win opened, for the results.
+    pub opened: Option<usize>,
+    /// Bosses killed, and the armor they dropped this run.
+    pub boss_kills: u32,
+    pub loot: Vec<gear::Piece>,
+    /// What the armor worn adds, [`gear::bonus`].
+    pub gear_might: f32,
+    pub gear_hp: f32,
     /// Seconds since the hero fell, while the death plays out.
     pub dead_t: Option<f32>,
     pub next_guid: u64,
@@ -273,6 +363,21 @@ pub(super) struct Run {
     pub version: u32,
     /// A centre-screen announcement and its seconds left.
     pub banner: Option<(String, f32)>,
+    /// The backpack, the worn trinkets and the coins picked up.
+    pub bag: bag::Bag,
+    /// At the results: what went to the purse, the coins and the bag sold.
+    pub earned: u64,
+    /// The merchant's upgrades, as bought when the run began.
+    pub ranks: merchant::Ranks,
+    /// The run time the next rare elite shows; 0 until the first is rolled.
+    pub next_rare: f32,
+    /// Level-up rerolls and banishes left, from the merchant's Fortune and Banishment.
+    pub rerolls: u8,
+    pub banishes: u8,
+    /// The spells and auras banished: they are offered no more this run.
+    pub banished: Vec<&'static str>,
+    /// The next card picked is banished rather than taken.
+    pub banishing: bool,
 }
 
 impl Default for Run {
@@ -300,11 +405,24 @@ impl Default for Run {
             bosses: 0,
             rings: 0,
             won: false,
+            opened: None,
+            boss_kills: 0,
+            loot: Vec::new(),
+            gear_might: 0.0,
+            gear_hp: 0.0,
             dead_t: None,
             next_guid: 1,
             damage_done: 0.0,
             version: 0,
             banner: None,
+            bag: bag::Bag::default(),
+            earned: 0,
+            ranks: [0; merchant::UPGRADES.len()],
+            next_rare: 0.0,
+            rerolls: 0,
+            banishes: 0,
+            banished: Vec::new(),
+            banishing: false,
         }
     }
 }
@@ -329,21 +447,13 @@ impl Run {
             7 | 11 | 3 | 4 => s.max_hp += 15.0,
             _ => s.speed += 0.5,
         }
+        s.might += self.gear_might;
+        s.max_hp *= 1.0 + self.gear_hp;
         for &(p, level) in &self.passives {
-            let v = p.per_level * f32::from(level);
-            match p.stat {
-                Stat::Might => s.might += v,
-                Stat::MaxHp => s.max_hp *= 1.0 + v,
-                Stat::Speed => s.speed *= 1.0 + v,
-                Stat::Regen => s.regen += v,
-                Stat::Haste => s.haste += v,
-                Stat::Area => s.area += v,
-                Stat::Magnet => s.magnet *= 1.0 + v,
-                Stat::Growth => s.growth += v,
-                Stat::Armor => s.armor += v,
-                Stat::Crit => s.crit += v,
-            }
+            bag::add_stat(&mut s, p.stat, p.per_level * f32::from(level));
         }
+        self.bag.apply(&mut s);
+        merchant::apply(&self.ranks, &mut s);
         s
     }
 

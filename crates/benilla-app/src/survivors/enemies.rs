@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use benilla_world::model_fade::DespawnFade;
 use benilla_world::rig_anim::GlobalSeqDrive;
 use benilla_world::world_point::WorldPoint;
 use bevy::prelude::*;
@@ -25,6 +26,8 @@ pub(super) struct Enemy {
     pub radius: f32,
     pub xp: u32,
     pub boss: bool,
+    /// A rare elite: bigger, much tougher, glowing, and rich ([`RARE_EVERY`]).
+    pub rare: bool,
     pub attack_cd: f32,
     pub slow: f32,
     pub slow_t: f32,
@@ -58,7 +61,15 @@ pub(super) struct Loot {
     pub pos: Vec3,
     pub xp: u32,
     pub boss: bool,
+    /// The creature's level and whether it was a great beast, for the coins and items it drops.
+    pub level: u32,
+    pub big: bool,
+    pub rare: bool,
 }
+
+/// Seconds between rare elites, and the aura that marks one: Enrage's red glow.
+const RARE_EVERY: (f32, f32) = (75.0, 120.0);
+const RARE_AURA: u32 = 8599;
 
 #[derive(Clone, Copy)]
 pub(super) enum GemKind {
@@ -100,15 +111,17 @@ fn spawn_enemy(
     pos: Vec3,
     hero: Vec3,
     boss: bool,
+    rare: bool,
 ) {
     let scale = data::hp_scale(run.elapsed);
     let serial = run.guid();
+    let size = if rare { 1.5 } else { 1.0 };
     let e = units::spawn_unit(
         commands,
         &UnitSpec {
             serial,
             display: def.display,
-            scale: def.scale,
+            scale: def.scale * size,
             level: def.level,
             faction: units::FACTION_MONSTER,
             bytes0: 1 << 8,
@@ -118,17 +131,22 @@ fn spawn_enemy(
         pos,
         yaw_toward(hero - pos),
     );
-    let hp = def.hp * scale;
+    let hp = def.hp * scale * if rare { 15.0 } else { 1.0 };
+    let mut marks = Marks::debuffs();
+    if rare {
+        marks.add(RARE_AURA, f32::INFINITY);
+    }
     commands.entity(e).insert((
         Enemy {
             def,
             hp,
             max_hp: hp,
-            speed: def.speed,
-            damage: def.damage * data::damage_scale(run.elapsed),
-            radius: radius_for(def),
-            xp: def.xp,
+            speed: def.speed * if rare { 1.1 } else { 1.0 },
+            damage: def.damage * data::damage_scale(run.elapsed) * if rare { 1.8 } else { 1.0 },
+            radius: radius_for(def) * size,
+            xp: def.xp * if rare { 10 } else { 1 },
             boss,
+            rare,
             attack_cd: 0.5,
             slow: 1.0,
             slow_t: 0.0,
@@ -140,7 +158,7 @@ fn spawn_enemy(
             dots: Vec::new(),
             dead: false,
         },
-        Marks::debuffs(),
+        marks,
     ));
 }
 
@@ -180,7 +198,7 @@ pub(super) fn spawn_enemies(
             hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 30.0,
             hpos.y,
         );
-        spawn_enemy(&mut commands, &mut run, def, pos, hpos, true);
+        spawn_enemy(&mut commands, &mut run, def, pos, hpos, true, false);
         run.bosses += 1;
         run.banner = Some((format!("{} approaches!", def.name), 4.0));
     }
@@ -198,9 +216,26 @@ pub(super) fn spawn_enemies(
                 hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 26.0,
                 hpos.y,
             );
-            spawn_enemy(&mut commands, &mut run, def, pos, hpos, false);
+            spawn_enemy(&mut commands, &mut run, def, pos, hpos, false, false);
         }
         run.banner = Some(("They're surrounding you!".into(), 3.0));
+    }
+
+    // Now and then a rare elite of the moment's crowd, announced.
+    if run.next_rare == 0.0 {
+        run.next_rare = rng.range(RARE_EVERY.0, RARE_EVERY.1);
+    }
+    if elapsed >= run.next_rare {
+        run.next_rare = elapsed + rng.range(RARE_EVERY.0, RARE_EVERY.1);
+        let def = &roster.enemies[pool[rng.index(pool.len())]];
+        let a = rng.range(0.0, std::f32::consts::TAU);
+        let pos = ground(
+            &world,
+            hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 28.0,
+            hpos.y,
+        );
+        spawn_enemy(&mut commands, &mut run, def, pos, hpos, false, true);
+        run.banner = Some((format!("A rare {} appears!", def.name), 4.0));
     }
 
     spawner.timer -= time.delta_secs();
@@ -219,7 +254,7 @@ pub(super) fn spawn_enemies(
         let a = rng.range(0.0, std::f32::consts::TAU);
         let r = rng.range(34.0, 42.0);
         let pos = ground(&world, hpos + Vec3::new(a.cos(), 0.0, a.sin()) * r, hpos.y);
-        spawn_enemy(&mut commands, &mut run, def, pos, hpos, false);
+        spawn_enemy(&mut commands, &mut run, def, pos, hpos, false, false);
     }
 }
 
@@ -393,31 +428,56 @@ pub(super) fn reap_dead(
     mut commands: Commands,
     time: Res<Time>,
     mut dying: Query<(Entity, &mut Dying)>,
+    fading: Query<(Entity, &DespawnFade), With<Enemy>>,
 ) {
+    let mut bodies: Vec<(Entity, f32)> = Vec::with_capacity(dying.iter().len());
     for (e, mut d) in &mut dying {
         d.0 += time.delta_secs();
-        if d.0 > 2.5 {
+        bodies.push((e, d.0));
+    }
+    // Past the cap the oldest go now: each corpse is a whole rigged model, its emitters and its
+    // shadow, and at the late crowd's kill rate they were half the units on the field.
+    bodies.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let keep = bodies.len().min(MAX_CORPSES);
+    for (i, &(e, age)) in bodies.iter().enumerate() {
+        if age > 2.5 || i >= keep {
             commands
                 .entity(e)
                 .remove::<Dying>()
-                .insert(benilla_world::model_fade::DespawnFade::default());
+                .insert(DespawnFade::default());
+        }
+    }
+    // The fade takes two seconds more; past the cap, the faintest of the fading leave early.
+    let mut fades: Vec<(Entity, f32)> = fading
+        .iter()
+        .filter_map(|(e, f)| f.armed().map(|t| (e, t)))
+        .collect();
+    if fades.len() > MAX_FADING {
+        fades.sort_by(|a, b| a.1.total_cmp(&b.1));
+        for &(e, _) in &fades[..fades.len() - MAX_FADING] {
+            commands.entity(e).try_despawn();
         }
     }
 }
+
+/// Most corpses lying at once, and fading out after.
+const MAX_CORPSES: usize = 24;
+const MAX_FADING: usize = 24;
 
 pub(super) fn mark_dying(commands: &mut Commands, e: Entity) {
     commands.entity(e).insert(Dying(0.0));
 }
 
-/// Most gems on the ground at once; past it, a kill's worth joins an existing gem.
-const MAX_GEMS: usize = 350;
+/// Most gems on the ground at once; past it, a kill's worth joins the nearest one. Each wisp
+/// carries ~100 live particles, so 350 of them were most of the scene's.
+const MAX_GEMS: usize = 150;
 
 pub(super) fn drop_loot(
     mut commands: Commands,
     mut drops: MessageReader<Loot>,
     mut rng: ResMut<Rng>,
     mut run: ResMut<Run>,
-    mut gems: Query<&mut Gem>,
+    mut gems: Query<(&Transform, &mut Gem)>,
 ) {
     let mut count = gems.iter().count();
     for d in drops.read() {
@@ -426,7 +486,14 @@ pub(super) fn drop_loot(
             spawn_gem(&mut commands, run.guid(), d.pos + Vec3::X * 0.8, heal);
         }
         if count >= MAX_GEMS && !d.boss {
-            if let Some(mut g) = gems.iter_mut().find(|g| matches!(g.kind, GemKind::Xp(_))) {
+            let near = gems
+                .iter_mut()
+                .filter(|(_, g)| matches!(g.kind, GemKind::Xp(_)))
+                .min_by(|a, b| {
+                    let da = a.0.translation.distance_squared(d.pos);
+                    da.total_cmp(&b.0.translation.distance_squared(d.pos))
+                });
+            if let Some((_, mut g)) = near {
                 if let GemKind::Xp(xp) = &mut g.kind {
                     *xp += d.xp;
                 }

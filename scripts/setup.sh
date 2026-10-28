@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
-# One command from a fresh clone to a playable browser build:
+# One command from a fresh clone to a playable native build:
 #
 #   ./scripts/setup.sh
 #
 #   1. fetch the game data (a WoW 1.12.1 client's Data folder, from archive.org — not committed)
-#   2. install the wasm toolchain (wasi-sdk, wasm-bindgen-cli, binaryen)
-#   3. build the client into web/dist/
+#   2. build the game (`cargo build --release -p warcraft-survivors`)
 #
 # Each step is re-runnable and skips what is already done.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 scripts/fetch-data.sh
-scripts/web-setup.sh
-scripts/web-build.sh
+cargo build --release -p warcraft-survivors
 
 echo
-echo "All set. Start the local server:"
-echo "  cargo run --release -p wenilla-host -- --www web/dist --data wow-data/Data"
-echo "then open http://127.0.0.1:8090/"
+echo "All set. Start the game:"
+echo "  WOW_DATA=wow-data/Data ./target/release/warcraft-survivors"

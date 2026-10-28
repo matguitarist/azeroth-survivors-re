@@ -145,7 +145,7 @@ fn swallow_input_under_the_cover(
         pointer.left = true;
     }
 
-    if !screen.covering() {
+    if !screen.swallows_input() {
         // Hand the pointer back once, only when the stash is still true (see [`CoveredPointer`]).
         if pointer.blanked {
             pointer.blanked = false;

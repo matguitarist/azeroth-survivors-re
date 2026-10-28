@@ -6,7 +6,7 @@ use bevy::input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
 use super::data::{self, ClassDef};
-use super::units::{self, flat, wow_to_bevy, yaw_toward, Fx, Marks, UnitSpec};
+use super::units::{self, flat, wow_to_bevy, yaw_toward, Fx, Marks};
 use super::{Phase, Run, Selection};
 use crate::creature_anim::{move_flags, MovementState};
 use crate::net::{FieldChanged, Guid, ObjectStore};
@@ -31,6 +31,10 @@ const GRAVITY: f32 = 19.291_105;
 
 /// Radians of orbit per raw mouse unit while right-dragging.
 const ORBIT_RATE: f32 = 0.008;
+/// Radians a second a pad's right stick, held over, swings the free camera.
+const PAD_TURN: f32 = 2.5;
+/// Radians the menu hero turns per unit the cursor is dragged across the window.
+const TURN_RATE: f32 = 0.01;
 /// Elevation clamp (radians): ~10°..~83° above the horizon, so the camera never dives underground.
 const PITCH_MIN: f32 = 0.18;
 const PITCH_MAX: f32 = 1.45;
@@ -53,7 +57,12 @@ pub(super) enum CamMode {
 #[derive(Resource)]
 pub(super) struct CamRig {
     pub dist: f32,
+    /// The menu camera's azimuth around the hero.
     pub orbit: f32,
+    /// How far the menu hero is turned from facing the camera; a drag turns him.
+    pub turn: f32,
+    /// Where the cursor was while a drag that began off the menu's panels turns him.
+    pub turn_from: Option<f32>,
     /// Orbit azimuth (radians) around the hero; right-drag swings it during play.
     pub yaw: f32,
     /// Elevation above the horizon (radians), clamped so the camera never dives underground.
@@ -61,11 +70,28 @@ pub(super) struct CamRig {
     pub mode: CamMode,
 }
 
+impl CamRig {
+    /// Lock or unlock the camera, as `C` does; locking snaps back to the top-down view, so
+    /// world-relative WASD lines up with the screen again.
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            CamMode::Fixed => CamMode::Orbit,
+            CamMode::Orbit => {
+                self.yaw = 0.0;
+                self.pitch = FIXED_PITCH;
+                CamMode::Fixed
+            }
+        };
+    }
+}
+
 impl Default for CamRig {
     fn default() -> Self {
         Self {
             dist: 30.0,
             orbit: 0.6,
+            turn: 0.0,
+            turn_from: None,
             yaw: 0.0,
             pitch: FIXED_PITCH,
             mode: CamMode::Fixed,
@@ -93,13 +119,17 @@ pub(super) fn follow_map(
     }
 }
 
-/// The hero in the class trainer's look, weapons drawn.
+/// The hero: a player body of the picked race, sex and look, in the armor worn and the class's
+/// weapons, drawn. `items` are `(EQUIPMENT_SLOT_*, entry)` of templates [`super::gear`] cached.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_hero(
     commands: &mut Commands,
     class: &'static ClassDef,
     display: u32,
     race: u8,
     sex: u8,
+    custom: units::Custom,
+    items: &[(u8, u32)],
     serial: u64,
     pos: Vec3,
 ) -> Entity {
@@ -107,16 +137,15 @@ pub(super) fn spawn_hero(
         | u32::from(class.id) << 8
         | u32::from(sex) << 16
         | u32::from(class.power) << 24;
-    let e = units::spawn_unit(
+    let e = units::spawn_player(
         commands,
-        &UnitSpec {
+        &units::PlayerSpec {
             serial,
             display,
-            scale: 1.0,
             level: 60,
-            faction: units::FACTION_FRIENDLY,
             bytes0,
-            weapons: class.weapons,
+            custom,
+            items,
             sheath: class.sheath,
         },
         pos,
@@ -151,9 +180,11 @@ pub(super) fn aim_cursor(
     cams: Query<(&Camera, &Transform), With<WorldCamera>>,
     hero: Query<&Transform, (With<Hero>, Without<WorldCamera>)>,
     world: WorldPoint,
+    pad: Res<super::pad::Pad>,
     mut aim: ResMut<AimPoint>,
 ) {
-    let point = (|| {
+    // A pad drives without a cursor: the hero faces where he runs.
+    let point = (!pad.active).then(|| {
         let cursor = windows.single().ok()?.cursor_position()?;
         let (cam, tf) = cams.single().ok()?;
         let ray = cam
@@ -177,7 +208,8 @@ pub(super) fn aim_cursor(
             }
         }
         at
-    })();
+    });
+    let point = point.flatten();
     if aim.0 != point {
         aim.0 = point;
     }
@@ -188,6 +220,8 @@ pub(super) fn aim_cursor(
 pub(super) fn drive_hero(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    pad: Res<super::pad::Pad>,
     phase: Res<State<Phase>>,
     run: Res<Run>,
     selection: Res<Selection>,
@@ -220,10 +254,24 @@ pub(super) fn drive_hero(
                 if keys.any_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) {
                     dir.x += 1.0;
                 }
+                // Both mouse buttons run, as in WoW: unlocked, forward along the camera while the
+                // drag steers it; locked, toward the cursor the hero faces.
+                let both = mouse.pressed(MouseButton::Left) && mouse.pressed(MouseButton::Right);
+                if both && rig.mode == CamMode::Orbit {
+                    dir.z -= 1.0;
+                }
+                // A pad's left stick, up away from the camera.
+                dir += Vec3::new(pad.left.x, 0.0, -pad.left.y);
                 // In orbit mode WASD is camera-relative; in fixed mode it stays world-relative.
                 if rig.mode == CamMode::Orbit {
                     let (sy, cy) = rig.yaw.sin_cos();
                     dir = Vec3::new(dir.x * cy + dir.z * sy, 0.0, dir.z * cy - dir.x * sy);
+                }
+                let toward = aim.0.map(|a| flat(a - tf.translation));
+                if let Some(d) =
+                    toward.filter(|d| both && rig.mode == CamMode::Fixed && d.length() > 0.5)
+                {
+                    dir += d.normalize();
                 }
             }
             let mut pos = tf.translation;
@@ -330,9 +378,11 @@ pub(super) fn drop_stray_buttons(
     }
 }
 
-/// A slow orbit at the menu; in play, top-down until `C` unlocks it to swing and tilt.
+/// A still view of the hero at the menu, who turns under a drag; in play, top-down until `C`
+/// unlocks it to swing and tilt.
 pub(super) fn place_camera(
     time: Res<Time<Real>>,
+    pad: Res<super::pad::Pad>,
     phase: Res<State<Phase>>,
     mut rig: ResMut<CamRig>,
     mut wheel: MessageReader<MouseWheel>,
@@ -341,23 +391,18 @@ pub(super) fn place_camera(
     keys: Res<ButtonInput<KeyCode>>,
     player: Res<crate::player::Player>,
     world: WorldPoint,
-    hero: Query<&Transform, (With<Hero>, Without<WorldCamera>)>,
+    mut hero: Query<&mut Transform, (With<Hero>, Without<WorldCamera>)>,
     mut cams: Query<&mut Transform, With<WorldCamera>>,
+    ui: Query<&Interaction>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
-    // `C` unlocks the camera to swing and tilt; locking it again snaps back to the top-down view,
-    // so world-relative WASD lines up with the screen again.
+    // `C` unlocks the camera to swing and tilt (the pause menu's Settings too).
     if keys.just_pressed(KeyCode::KeyC) {
-        rig.mode = match rig.mode {
-            CamMode::Fixed => CamMode::Orbit,
-            CamMode::Orbit => {
-                rig.yaw = 0.0;
-                rig.pitch = FIXED_PITCH;
-                CamMode::Fixed
-            }
-        };
+        rig.toggle_mode();
     }
     // With no hero yet, the focus `drive_hero` grounded.
-    let focus = hero.single().map_or(player.pos, |t| t.translation);
+    let mut hero = hero.single_mut().ok();
+    let focus = hero.as_ref().map_or(player.pos, |t| t.translation);
     // Multiplicative, so a notch moves as far by eye close in as far out; all the way down to an
     // over-the-shoulder view.
     for w in wheel.read() {
@@ -367,13 +412,43 @@ pub(super) fn place_camera(
         };
         rig.dist = (rig.dist * (1.0 - 0.12 * notches).clamp(0.5, 1.5)).clamp(ZOOM_MIN, ZOOM_MAX);
     }
+    // A pad's right stick swings and tilts the free camera, and zooms the locked one.
+    let dt = time.delta_secs();
+    if *phase.get() != Phase::Menu && pad.right != Vec2::ZERO {
+        match rig.mode {
+            CamMode::Orbit => {
+                rig.yaw -= pad.right.x * PAD_TURN * dt;
+                rig.pitch = (rig.pitch - pad.right.y * PAD_TURN * dt).clamp(PITCH_MIN, PITCH_MAX);
+            }
+            CamMode::Fixed => {
+                rig.dist = (rig.dist * (1.0 - pad.right.y * dt)).clamp(ZOOM_MIN, ZOOM_MAX);
+            }
+        }
+    }
     let (eye, look) = if *phase.get() == Phase::Menu {
-        rig.orbit += time.delta_secs() * 0.2;
+        // As on the create screen, a drag turns the hero, unless it began on a button or panel.
+        // The cursor, not raw motion, so a pointer that warps or a page's mouse turns him too.
+        let x = windows
+            .single()
+            .ok()
+            .and_then(|w| w.cursor_position())
+            .map(|c| c.x);
+        if mouse.just_pressed(MouseButton::Left) && ui.iter().all(|i| *i == Interaction::None) {
+            rig.turn_from = x;
+        }
+        if !mouse.pressed(MouseButton::Left) {
+            rig.turn_from = None;
+        }
+        if let (Some(from), Some(x)) = (rig.turn_from, x) {
+            rig.turn += (x - from) * TURN_RATE;
+            rig.turn_from = Some(x);
+        }
+        let out = Vec3::new(rig.orbit.sin(), 0.0, rig.orbit.cos());
+        if let Some(tf) = hero.as_mut() {
+            tf.rotation = Quat::from_rotation_y(yaw_toward(out) + rig.turn);
+        }
         let d = 7.0;
-        (
-            focus + Vec3::new(rig.orbit.sin() * d, 2.4, rig.orbit.cos() * d),
-            focus + Vec3::Y * 1.1,
-        )
+        (focus + out * d + Vec3::Y * 2.4, focus + Vec3::Y * 1.1)
     } else {
         // Unlocked, either mouse button drags the camera around the hero, as in WoW.
         if rig.mode == CamMode::Orbit && mouse.any_pressed([MouseButton::Left, MouseButton::Right])

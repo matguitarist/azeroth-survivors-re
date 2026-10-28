@@ -164,12 +164,27 @@ pub(crate) struct LoadingScreen {
     last_wait_log: f32,
     /// The avatar's position last frame, to measure a snap (applied in `Input`, a stage earlier).
     last_pos: Option<Vec3>,
+    /// Survivors' pick screen: the screen still raises and clears, and [`Self::covering`] still
+    /// says so, but nothing is drawn and no input is taken; the mode veils its own world.
+    quiet: bool,
 }
 
 impl LoadingScreen {
     /// Whether the opaque cover is up; the world camera renders under it, never behind the glue.
     pub(crate) fn covering(&self) -> bool {
         self.active
+    }
+
+    /// Draw nothing and take no input while up ([`Self::quiet`]), or go back to the full cover.
+    pub(crate) fn set_quiet(&mut self, quiet: bool) {
+        if self.quiet != quiet {
+            self.quiet = quiet;
+        }
+    }
+
+    /// Whether the cover takes the input: up and not quiet.
+    pub(crate) fn swallows_input(&self) -> bool {
+        self.active && !self.quiet
     }
 
     /// An active cover, for tests.
@@ -591,7 +606,7 @@ fn drive_loading_screen(
 
     // --- Visibility: under blackout only the root's black shows. ---
     if let Ok(mut vis) = root.single_mut() {
-        *vis = if screen.active {
+        *vis = if screen.active && !screen.quiet {
             Visibility::Visible
         } else {
             Visibility::Hidden

@@ -162,6 +162,3 @@ windows-sys = { version = "0.59", features = [
 benilla-srp = { path = "../benilla-srp" }
 num-bigint = "0.4.6"
 sha1.workspace = true
-# tests/boot_manifest.rs parses web/boot-manifest.json (the boot-prefetch read-set). Dev-only:
-# the 0978 decision to keep serde_json out of the shipped app stands.
-serde_json = "1"

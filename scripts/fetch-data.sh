@@ -28,17 +28,37 @@ fi
 
 mkdir -p "$DATA_DIR"
 
-if [ ! -f "$ZIP" ]; then
-    echo "downloading the game data (a WoW 1.12.1 client, ~5.5 GB)…"
-    echo "  $URL"
-    curl -L -C - -o "$ZIP" "$URL"
+# Always run curl: `-C -` resumes a partial zip and is a no-op on a complete one.
+if [ -f "$ZIP" ]; then
+    echo "resuming $ZIP"
 else
-    echo "resuming/using $ZIP"
+    echo "downloading the game data (a WoW 1.12.1 client, ~5.5 GB)…"
 fi
+echo "  $URL"
+curl -L -C - -o "$ZIP" "$URL"
 
 echo "extracting MPQs into ${DATA}…"
 mkdir -p "$DATA"
 unzip -o "$ZIP" 'Data/*.MPQ' -d "$DATA_DIR"
+
+# Check every MPQ against data-manifest.tsv before the zip goes: a truncated or corrupt download
+# fails here, not later as a broken MPQ.
+echo "verifying MPQs…"
+bad=0
+while IFS=$'\t' read -r name size sha; do
+    case "$name" in ''|'#'*) continue ;; esac
+    f="$DATA/$name"
+    if [ ! -f "$f" ]; then
+        echo "  missing: $name"; bad=1
+    elif [ "$(wc -c < "$f" | tr -d ' ')" != "$size" ] \
+        || [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" != "$sha" ]; then
+        echo "  corrupt: $name"; rm -f "$f"; bad=1
+    fi
+done < "$ROOT/scripts/data-manifest.tsv"
+if [ "$bad" = 1 ]; then
+    echo "the download is damaged; delete $ZIP and run this again"
+    exit 1
+fi
 
 # The MPQs are what the game reads; drop the zip to reclaim ~5.5 GB.
 rm -f "$ZIP"
