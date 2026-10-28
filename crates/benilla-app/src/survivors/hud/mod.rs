@@ -207,7 +207,13 @@ pub(super) enum UiAction {
     Tab(u8),
     /// The backpack's Close.
     CloseBag,
+    /// The results' Play Again: the same hero in the same zone, straight back in.
+    PlayAgain,
 }
+
+/// A Play Again waiting for the pick screen to reset the run and stand the hero up again.
+#[derive(Resource, Default)]
+pub(super) struct Replay(pub(super) bool);
 
 #[derive(Clone, Copy)]
 pub(super) enum Choice {
@@ -835,11 +841,20 @@ pub(super) fn keys(
     mut next: ResMut<NextState<Phase>>,
     mut settings: ResMut<super::panels::SettingsOpen>,
     bag: Res<super::panels::BagOpen>,
+    map: Res<super::worldmap::MapOpen>,
+    mut replay: ResMut<Replay>,
+    heroes: Query<(), With<Hero>>,
 ) {
     match phase.get() {
         Phase::Menu => {
-            if keys.just_pressed(KeyCode::Enter) && start_run(&mut run, &mut selection) {
+            // A replay goes once the reset run's hero is back on its feet.
+            let again = replay.0 && !heroes.is_empty();
+            if (keys.just_pressed(KeyCode::Enter) || again) && start_run(&mut run, &mut selection)
+            {
                 next.set(Phase::Playing);
+            }
+            if again {
+                replay.0 = false;
             }
         }
         Phase::Playing => {
@@ -849,8 +864,9 @@ pub(super) fn keys(
         }
         // Escape closes Settings first, then the pause menu.
         Phase::Paused => {
-            // The backpack's own Escape is [`super::panels::bag_input`]'s.
-            if keys.just_pressed(KeyCode::Escape) && !bag.0 {
+            // The backpack's and the map's own Escape are [`super::panels::bag_input`]'s and
+            // [`super::worldmap::map_input`]'s.
+            if keys.just_pressed(KeyCode::Escape) && !bag.0 && !map.0 {
                 if settings.0 {
                     settings.0 = false;
                 } else {
@@ -859,8 +875,12 @@ pub(super) fn keys(
             }
         }
         Phase::LevelUp => {}
+        // Enter plays again, Escape goes back to the pick screen.
         Phase::GameOver => {
             if keys.just_pressed(KeyCode::Enter) {
+                replay.0 = true;
+                next.set(Phase::Menu);
+            } else if keys.just_pressed(KeyCode::Escape) {
                 next.set(Phase::Menu);
             }
         }

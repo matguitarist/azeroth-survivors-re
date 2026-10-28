@@ -1177,6 +1177,129 @@ fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>, pr
 }
 
 #[allow(clippy::too_many_arguments)]
+/// How long a zone pick rests before the world goes there.
+const STAGE_DELAY: f32 = 0.6;
+/// The veil's fade, in alpha a second: in before the move, out once the ground is in.
+const VEIL_IN: f32 = 5.0;
+const VEIL_OUT: f32 = 2.5;
+
+/// The black between the world and the pick screen while the world moves to another zone: the
+/// engine's loading screen stays quiet at the menu, so the panels never go away.
+#[derive(Resource, Default)]
+pub(super) struct StageVeil {
+    /// Seconds the current pick has rested.
+    rest: f32,
+    /// The pick the rest is counted for.
+    pick: usize,
+    alpha: f32,
+}
+
+#[derive(Component)]
+pub(super) struct VeilNode;
+#[derive(Component)]
+pub(super) struct VeilText;
+
+/// The menu's world follows the zone picked, once the pick has rested [`STAGE_DELAY`] and the
+/// veil is down: the hero stands in it.
+pub(super) fn stage_follows_pick(
+    time: Res<Time<Real>>,
+    phase: Res<State<Phase>>,
+    mut selection: ResMut<Selection>,
+    mut veil: ResMut<StageVeil>,
+) {
+    if *phase.get() != Phase::Menu || selection.map == selection.stage {
+        veil.rest = 0.0;
+        veil.pick = selection.map;
+        return;
+    }
+    if veil.pick != selection.map {
+        veil.rest = 0.0;
+        veil.pick = selection.map;
+    }
+    veil.rest += time.delta_secs();
+    if veil.rest >= STAGE_DELAY && veil.alpha >= 1.0 {
+        selection.stage = selection.map;
+    }
+}
+
+/// Fade the veil in for a move and out once the ground is in, and keep the engine's loading
+/// screen quiet at the menu after the first world load, which it still covers.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stage_veil(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    phase: Res<State<Phase>>,
+    selection: Res<Selection>,
+    mut veil: ResMut<StageVeil>,
+    mut screen: ResMut<crate::loading_screen::LoadingScreen>,
+    font: Res<HudFont>,
+    mut nodes: Query<(&mut BackgroundColor, &mut Visibility), With<VeilNode>>,
+    mut texts: Query<(&mut Text, &mut TextColor), With<VeilText>>,
+    // 0 before the first load, 1 while it covers, 2 once it has cleared.
+    mut booted: Local<u8>,
+) {
+    match (*booted, screen.covering()) {
+        (0, true) => *booted = 1,
+        (1, false) => *booted = 2,
+        _ => {}
+    }
+    let menu = *phase.get() == Phase::Menu;
+    screen.set_quiet(menu && *booted == 2);
+    if nodes.is_empty() {
+        commands
+            .spawn((
+                VeilNode,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+                // Over the world, under the pick screen's [`MenuRoot`] (410).
+                GlobalZIndex(405),
+                Visibility::Hidden,
+                bevy::ui::FocusPolicy::Pass,
+            ))
+            .with_children(|v| {
+                v.spawn((
+                    VeilText,
+                    super::hud::centered_bundle(&font.0, "", 16.0, GOLD),
+                ));
+            });
+        return;
+    }
+    let moving = selection.map != selection.stage && veil.rest >= STAGE_DELAY;
+    let want = menu && (moving || (*booted == 2 && screen.covering()));
+    let dt = time.delta_secs();
+    veil.alpha = if want {
+        (veil.alpha + dt * VEIL_IN).min(1.0)
+    } else {
+        (veil.alpha - dt * VEIL_OUT).max(0.0)
+    };
+    let a = veil.alpha;
+    for (mut bg, mut vis) in &mut nodes {
+        let shown = if a > 0.0 {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != shown {
+            *vis = shown;
+        }
+        bg.0 = Color::srgba(0.0, 0.0, 0.0, a);
+    }
+    for (mut t, mut c) in &mut texts {
+        let line = format!("Loading {}", selection.map_def().name);
+        if t.0 != line {
+            t.0 = line;
+        }
+        c.0 = GOLD.with_alpha(a);
+    }
+}
+
 pub(super) fn menu_clicks(
     clicks: Res<GlueClicks>,
     actions: Query<(Entity, &MenuAction)>,

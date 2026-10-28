@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use benilla_world::model_fade::DespawnFade;
 use benilla_world::rig_anim::GlobalSeqDrive;
 use benilla_world::world_point::WorldPoint;
 use bevy::prelude::*;
@@ -427,31 +428,56 @@ pub(super) fn reap_dead(
     mut commands: Commands,
     time: Res<Time>,
     mut dying: Query<(Entity, &mut Dying)>,
+    fading: Query<(Entity, &DespawnFade), With<Enemy>>,
 ) {
+    let mut bodies: Vec<(Entity, f32)> = Vec::with_capacity(dying.iter().len());
     for (e, mut d) in &mut dying {
         d.0 += time.delta_secs();
-        if d.0 > 2.5 {
+        bodies.push((e, d.0));
+    }
+    // Past the cap the oldest go now: each corpse is a whole rigged model, its emitters and its
+    // shadow, and at the late crowd's kill rate they were half the units on the field.
+    bodies.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let keep = bodies.len().min(MAX_CORPSES);
+    for (i, &(e, age)) in bodies.iter().enumerate() {
+        if age > 2.5 || i >= keep {
             commands
                 .entity(e)
                 .remove::<Dying>()
-                .insert(benilla_world::model_fade::DespawnFade::default());
+                .insert(DespawnFade::default());
+        }
+    }
+    // The fade takes two seconds more; past the cap, the faintest of the fading leave early.
+    let mut fades: Vec<(Entity, f32)> = fading
+        .iter()
+        .filter_map(|(e, f)| f.armed().map(|t| (e, t)))
+        .collect();
+    if fades.len() > MAX_FADING {
+        fades.sort_by(|a, b| a.1.total_cmp(&b.1));
+        for &(e, _) in &fades[..fades.len() - MAX_FADING] {
+            commands.entity(e).try_despawn();
         }
     }
 }
+
+/// Most corpses lying at once, and fading out after.
+const MAX_CORPSES: usize = 24;
+const MAX_FADING: usize = 24;
 
 pub(super) fn mark_dying(commands: &mut Commands, e: Entity) {
     commands.entity(e).insert(Dying(0.0));
 }
 
-/// Most gems on the ground at once; past it, a kill's worth joins an existing gem.
-const MAX_GEMS: usize = 350;
+/// Most gems on the ground at once; past it, a kill's worth joins the nearest one. Each wisp
+/// carries ~100 live particles, so 350 of them were most of the scene's.
+const MAX_GEMS: usize = 150;
 
 pub(super) fn drop_loot(
     mut commands: Commands,
     mut drops: MessageReader<Loot>,
     mut rng: ResMut<Rng>,
     mut run: ResMut<Run>,
-    mut gems: Query<&mut Gem>,
+    mut gems: Query<(&Transform, &mut Gem)>,
 ) {
     let mut count = gems.iter().count();
     for d in drops.read() {
@@ -460,7 +486,14 @@ pub(super) fn drop_loot(
             spawn_gem(&mut commands, run.guid(), d.pos + Vec3::X * 0.8, heal);
         }
         if count >= MAX_GEMS && !d.boss {
-            if let Some(mut g) = gems.iter_mut().find(|g| matches!(g.kind, GemKind::Xp(_))) {
+            let near = gems
+                .iter_mut()
+                .filter(|(_, g)| matches!(g.kind, GemKind::Xp(_)))
+                .min_by(|a, b| {
+                    let da = a.0.translation.distance_squared(d.pos);
+                    da.total_cmp(&b.0.translation.distance_squared(d.pos))
+                });
+            if let Some((_, mut g)) = near {
                 if let GemKind::Xp(xp) = &mut g.kind {
                     *xp += d.xp;
                 }

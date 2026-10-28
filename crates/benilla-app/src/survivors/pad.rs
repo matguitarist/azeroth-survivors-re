@@ -151,7 +151,7 @@ fn keys_for(phase: Phase, button: GamepadButton) -> &'static [KeyCode] {
     match (phase, button) {
         // A clicks the focus ([`focus`]); Start still begins and plays again.
         (Phase::Menu | Phase::GameOver, B::Start) => &[KeyCode::Enter],
-        (Phase::Menu, B::East) => &[KeyCode::Escape],
+        (Phase::Menu | Phase::GameOver, B::East) => &[KeyCode::Escape],
         (Phase::Playing, B::South) => &[KeyCode::Space],
         (Phase::Playing, B::West | B::RightTrigger) => &[super::mobility::KEY],
         (Phase::Playing, B::North) => &[KeyCode::KeyC],
@@ -161,6 +161,7 @@ fn keys_for(phase: Phase, button: GamepadButton) -> &'static [KeyCode] {
         (Phase::Playing, B::DPadRight) => &[KeyCode::Digit3],
         (Phase::Playing, B::DPadDown) => &[KeyCode::Digit4],
         (Phase::Playing | Phase::Paused, B::Select) => &[KeyCode::KeyB],
+        (Phase::Playing | Phase::Paused, B::LeftTrigger) => &[KeyCode::KeyM],
         (Phase::Playing, B::Start) | (Phase::Paused, B::Start | B::East) => &[KeyCode::Escape],
         // The cards as the face buttons sit: left, top, right.
         (Phase::LevelUp, B::West) => &[KeyCode::Digit1],
@@ -302,6 +303,8 @@ mod tests {
         assert_eq!(keys_for(Phase::Paused, B::East), &[KeyCode::Escape]);
         // The bumpers reroll and banish there, rather than cast the movement spell.
         assert_eq!(keys_for(Phase::LevelUp, B::LeftTrigger), &[KeyCode::KeyR]);
+        assert_eq!(keys_for(Phase::Playing, B::LeftTrigger), &[KeyCode::KeyM]);
+        assert_eq!(keys_for(Phase::GameOver, B::East), &[KeyCode::Escape]);
         assert_eq!(keys_for(Phase::LevelUp, B::RightTrigger), &[KeyCode::KeyT]);
     }
 }

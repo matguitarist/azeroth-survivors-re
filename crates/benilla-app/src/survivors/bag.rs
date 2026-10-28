@@ -778,6 +778,16 @@ enum Dropped {
     Item(Item),
 }
 
+impl Pickup {
+    /// Its dot on the world map: gold for coins, the quality's color for an item.
+    pub(super) fn marker(&self) -> Option<Color> {
+        match self.what.as_ref()? {
+            Dropped::Coins(_) => Some(Color::srgb(1.0, 0.82, 0.0)),
+            Dropped::Item(item) => Some(item.quality.color()),
+        }
+    }
+}
+
 /// The light standing over a sack of green or better, and its pool on the ground (the camera looks
 /// down, so the column alone barely shows): unlit and additive, one material per quality.
 pub(super) struct Beams {
@@ -861,10 +871,14 @@ pub(super) fn drop_items(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut beams: Local<Option<Beams>>,
+    mut rich: Local<Option<bool>>,
 ) {
     let beams = beams.get_or_insert_with(|| Beams::new(&mut meshes, &mut mats));
-    // `WOW_SURVIVORS_LOOT=rich`, for testing: twenty times the drops.
-    let rich = crate::webenv::var("WOW_SURVIVORS_LOOT").is_some_and(|v| v == "rich");
+    // `WOW_SURVIVORS_LOOT=rich`, for testing: twenty times the drops. Read once: in a browser it
+    // is a trip through the page's URL.
+    let rich = *rich.get_or_insert_with(|| {
+        crate::webenv::var("WOW_SURVIVORS_LOOT").is_some_and(|v| v == "rich")
+    });
     for d in drops.read() {
         let (coin_p, coin_x, item_p) = if d.boss {
             (1.0, 25, 1.0)

@@ -24,8 +24,8 @@ use crate::glue::GlueClicks;
 
 /// `GameMenuFrame`'s width, widened to the glue buttons.
 const PAUSE_W: f32 = 240.0;
-/// Room for two `GlueDialogButtonTemplate`s with the dialog's 13 gap, and the stat table.
-const OVER_W: f32 = 460.0;
+/// Room for three buttons with the dialog's 13 gap, and the stat table.
+const OVER_W: f32 = 540.0;
 
 /// The Settings dialog's width.
 const SETTINGS_W: f32 = 340.0;
@@ -82,6 +82,7 @@ pub(super) enum PauseBox {
     Menu,
     Settings,
     Bag,
+    Map,
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -545,7 +546,8 @@ pub(super) fn build_panels(
                     })
                     .with_children(|row| {
                         for (label, action) in [
-                            ("Play Again", UiAction::MainMenu),
+                            ("Play Again", UiAction::PlayAgain),
+                            ("Main Menu", UiAction::MainMenu),
                             ("Exit Game", UiAction::Quit),
                         ] {
                             glue_button(
@@ -554,7 +556,7 @@ pub(super) fn build_panels(
                                 f,
                                 action,
                                 label,
-                                190.0,
+                                156.0,
                                 38.0,
                                 GlueBtnKind::Dialog,
                                 1.0,
@@ -567,7 +569,7 @@ pub(super) fn build_panels(
 }
 
 /// What each input does in a run, as the Key Bindings panel lists them.
-const CONTROLS: [(&str, &str); 9] = [
+const CONTROLS: [(&str, &str); 10] = [
     ("Move", "W A S D / Arrows"),
     ("Run forward", "Both mouse buttons"),
     ("Jump", "Space"),
@@ -576,17 +578,19 @@ const CONTROLS: [(&str, &str); 9] = [
     ("Turn camera (free)", "Drag either button"),
     ("Zoom", "Mouse wheel"),
     ("Pick a level-up card", "1  2  3"),
+    ("World map", "M"),
     ("Pause", "Escape"),
 ];
 
 /// The same on a controller ([`super::pad`]).
-const PAD_CONTROLS: [(&str, &str); 7] = [
+const PAD_CONTROLS: [(&str, &str); 8] = [
     ("Move", "Left stick"),
     ("Turn / zoom camera", "Right stick"),
     ("Jump", "A"),
     ("Class movement spell", "X / RB"),
     ("Lock / free camera", "Y"),
     ("Pick a level-up card", "X  Y  B"),
+    ("World map", "LB"),
     ("Pause / play again", "Start"),
 ];
 
@@ -679,6 +683,7 @@ pub(super) fn settings(
     clicks: Res<GlueClicks>,
     open: Res<SettingsOpen>,
     bag: Res<BagOpen>,
+    map: Res<super::worldmap::MapOpen>,
     tab: Res<Tab>,
     steps: Query<(Entity, &SettingStep)>,
     mut values: Query<(&SettingValue, &mut Text)>,
@@ -696,9 +701,10 @@ pub(super) fn settings(
     };
     for (b, mut node) in &mut boxes {
         let show = match b {
-            PauseBox::Menu => !open.0 && !bag.0,
+            PauseBox::Menu => !open.0 && !bag.0 && !map.0,
             PauseBox::Settings => open.0,
             PauseBox::Bag => bag.0 && !open.0,
+            PauseBox::Map => map.0 && !open.0,
         };
         shown(&mut node, show);
     }
@@ -790,6 +796,7 @@ pub(super) fn buttons(
     mut exit: MessageWriter<AppExit>,
     mut open: ResMut<SettingsOpen>,
     mut tab: ResMut<Tab>,
+    mut replay: ResMut<super::hud::Replay>,
 ) {
     for (e, action) in &actions {
         if !clicks.hit(e) {
@@ -805,6 +812,10 @@ pub(super) fn buttons(
                 }
             }
             (UiAction::MainMenu, Phase::Paused | Phase::GameOver) => next.set(Phase::Menu),
+            (UiAction::PlayAgain, Phase::GameOver) => {
+                replay.0 = true;
+                next.set(Phase::Menu);
+            }
             (UiAction::Quit, Phase::Paused | Phase::GameOver) => {
                 exit.write(AppExit::Success);
             }

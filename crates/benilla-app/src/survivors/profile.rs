@@ -144,7 +144,11 @@ impl Profile {
     /// The set worn in each slot: the strongest owned. `WOW_SURVIVORS_GEAR=<set>` dresses the
     /// hero in that whole set instead, for looking at the art.
     pub fn worn(&self, class: u8, catalog: &GearCatalog) -> Vec<(Slot, usize)> {
-        let forced = crate::webenv::var("WOW_SURVIVORS_GEAR").and_then(|v| v.parse::<usize>().ok());
+        // Read once: the menu asks every frame, and in a browser it is a trip through the URL.
+        static FORCED: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        let forced = *FORCED.get_or_init(|| {
+            crate::webenv::var("WOW_SURVIVORS_GEAR").and_then(|v| v.parse::<usize>().ok())
+        });
         Slot::ALL
             .iter()
             .filter_map(|&slot| {

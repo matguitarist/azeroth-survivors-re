@@ -24,6 +24,7 @@ mod pad;
 mod panels;
 mod profile;
 mod units;
+mod worldmap;
 
 use benilla_world::schedule::WorldStage;
 use bevy::prelude::*;
@@ -62,6 +63,19 @@ impl Plugin for SurvivorsPlugin {
             .init_resource::<panels::Tab>()
             .init_resource::<panels::BagOpen>()
             .init_resource::<merchant::MerchantOpen>()
+            .init_resource::<worldmap::MapOpen>()
+            .init_resource::<menu::StageVeil>()
+            .init_resource::<hud::Replay>()
+            .add_systems(
+                Update,
+                (
+                    worldmap::build_map.after(panels::build_panels),
+                    worldmap::map_input.after(panels::bag_input).before(hud::keys),
+                    worldmap::fill_map.after(worldmap::map_input),
+                )
+                    .chain()
+                    .after(WorldStage::Input),
+            )
             .add_systems(
                 Update,
                 (merchant::build_merchant, merchant::merchant)
@@ -164,7 +178,7 @@ impl Plugin for SurvivorsPlugin {
                     menu::build_menu,
                     menu::rebuild_zones,
                     menu::refresh_armor,
-                    menu::menu_clicks,
+                    (menu::menu_clicks, menu::stage_follows_pick, menu::stage_veil).chain(),
                     menu::refresh_menu_ui.before(crate::glue::GlueVisuals),
                     cards::deal_cards,
                     cards::choose_card,
@@ -207,7 +221,8 @@ impl Plugin for SurvivorsPlugin {
                     Update,
                     auto::drive.after(hud::keys).before(hud::refresh_menu),
                 )
-                .add_systems(Update, auto::plan.before(WorldStage::Input));
+                .add_systems(Update, auto::plan.before(WorldStage::Input))
+                .add_systems(Update, auto::extra.after(auto::drive));
         }
     }
 }
@@ -238,9 +253,9 @@ pub(super) struct Selection {
     pub custom: units::Custom,
     /// An index into [`data::MAPS`].
     pub map: usize,
-    /// The battleground the world is standing in: the last one entered (or the saved pick at
-    /// boot). Picking another at the menu changes only `map`, so the menu hero stays put and no
-    /// loading screen rises until Enter World.
+    /// The battleground the world is standing in. At the menu it follows `map` once the pick
+    /// has rested a moment ([`menu::stage_follows_pick`]), behind a veil rather than the loading
+    /// screen, so the hero stands in the zone picked.
     pub stage: usize,
     /// Bumped on every change, so the menu rebuilds once.
     pub version: u32,
