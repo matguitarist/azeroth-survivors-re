@@ -53,7 +53,7 @@ private struct GeneralSettings: View {
             Section("Classic Addons") {
                 Toggle(isOn: $installAddons) {
                     Text("Install AzerothPlus and AzerothAdmin")
-                    Text("AzerothPlus: a cooldown manager, a damage meter, a swing timer, a personal resource display, centered unit frames, an objectives tracker, a windowed map with its quests and minimap coordinates (/ap or its minimap button). AzerothAdmin: game master tools for an administrator on your own server (/aa).")
+                    Text("AzerothPlus: a cooldown manager, a damage meter, a swing timer, a personal resource display, centered unit frames, an objectives tracker, a windowed map with its quests, quest markers on the map and minimap, and minimap coordinates (/ap or its minimap button). AzerothAdmin: game master tools for an administrator on your own server (/aa).")
                 }
                 Button("Show AddOns Folder") { reveal(Addons.folder) }
             }
@@ -171,6 +171,8 @@ private struct GameSettingsForm<Content: View>: View {
 /// The game's own Settings steps (`survivors/panels.rs`, `CHOICES`), so both panels offer the same.
 private enum Stops {
     static let offOn = [("0", "Off"), ("1", "On")]
+    static let maxFPS = [("0", "No limit"), ("30", "30 fps"), ("60", "60 fps"), ("120", "120 fps")]
+    static let maxFPSBk = [("0", "No limit"), ("10", "10 fps"), ("30", "30 fps"), ("60", "60 fps")]
     static let lowHigh = [("0", "Low"), ("1", "Medium"), ("2", "High")]
     static let multisample = [("1", "Off"), ("2", "2×"), ("4", "4×"), ("8", "8×")]
     static let renderScale = [("0.5", "50%"), ("0.75", "75%"), ("1", "100%"), ("1.5", "150%"), ("2", "200%")]
@@ -180,31 +182,32 @@ private enum Stops {
                               ("8", "8× anisotropic"), ("16", "16× anisotropic")]
 }
 
-/// One-click graphics levels: each sets the same seven cvars. Balanced is the game's defaults.
+/// One-click graphics levels: each sets the same eight cvars. Balanced is the game's defaults.
 private enum QualityPreset: String, CaseIterable, Identifiable {
     case performance = "Performance", balanced = "Balanced", quality = "Quality"
     var id: String { rawValue }
 
     /// The cvars a preset owns, with each one's default: render scale, MSAA, anisotropy, view
-    /// distance, ground clutter, weather, spell detail. Every value is one of [`Stops`].
+    /// distance, ground clutter, weather, spell detail, SMAA. Every value is one of [`Stops`].
     static let keys: [(name: String, def: String)] = [
         ("renderScale", "1"), ("gxMultisample", "1"), ("anisotropic", "1"),
         ("farclip", "350"), ("WorldDetail", "1"), ("weatherDensity", "3"), ("spellEffectLevel", "2"),
+        ("smaa", "1"),
     ]
 
     var values: [String] {
         switch self {
-        case .performance: ["0.75", "1", "1", "277", "0", "1", "1"]
-        case .balanced: ["1", "1", "1", "350", "1", "3", "2"]
-        case .quality: ["1", "1", "16", "577", "2", "3", "2"]
+        case .performance: ["0.75", "1", "1", "277", "0", "1", "1", "0"]
+        case .balanced: ["1", "1", "1", "350", "1", "3", "2", "1"]
+        case .quality: ["1", "1", "16", "577", "2", "3", "2", "1"]
         }
     }
 
     var summary: String {
         switch self {
-        case .performance: "75% render scale, shorter view distance, no ground clutter, lighter weather and spells. For older Macs or long battery play."
+        case .performance: "75% render scale, shorter view distance, no ground clutter, lighter weather and spells, no edge smoothing. For older Macs or long battery play."
         case .balanced: "Native resolution and the game's standard view distance."
-        case .quality: "16× texture filtering, long view distance, dense ground clutter. Anti-aliasing stays separate: at Retina resolutions it costs about as much as everything else together."
+        case .quality: "16× texture filtering, long view distance, dense ground clutter. Edge smoothing (SMAA) is on in Balanced and Quality; multisampled anti-aliasing stays separate: at Retina resolutions it costs about as much as everything else together."
         }
     }
 
@@ -259,15 +262,19 @@ private struct GraphicsSettings: View {
                     }
                 }
                 Toggle("Vertical sync", isOn: c("gxVSync", "1").bool)
+                stops("Max frame rate", c("maxFPS", "0"), Stops.maxFPS)
+                stops("In the background", c("maxFPSBk", "30"), Stops.maxFPSBk)
+                Toggle("Edge smoothing (SMAA)", isOn: c("smaa", "1").bool)
                 stops("Anti-aliasing", c("gxMultisample", "1"), Stops.multisample)
                 stops("Render scale", c("renderScale", "1"), Stops.renderScale)
+                Toggle("Dynamic resolution", isOn: c("dynamicResolution", "1").bool)
                 stops("View distance", c("farclip", "350"), Stops.farclip)
                 stops("Ground clutter", c("WorldDetail", "1"), Stops.lowHigh)
                 stops("Spell detail", c("spellEffectLevel", "2"), Stops.lowHigh)
                 stops("Weather", c("weatherDensity", "3"), Stops.weather)
                 Toggle("Full-screen glow", isOn: c("ffxGlow", "1").bool)
                 stops("Texture filtering", c("anisotropic", "1"), Stops.anisotropic)
-                Text("Render scale below 100% draws the 3D world at a lower resolution for speed, and MetalFX scales it back up; the interface stays sharp. At 100%, the game keeps the 3D near 2560×1600 pixels on larger screens, such as a 5K display.")
+                Text("Render scale below 100% draws the 3D world at a lower resolution for speed, and MetalFX scales it back up; the interface stays sharp. At 100%, the game keeps the 3D near 2560×1600 pixels on larger screens, such as a 5K display, and dynamic resolution lowers it during heavy fights when the graphics chip falls behind. A frame-rate limit saves battery and heat, most of all with vertical sync off; in the background the game draws slower still.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

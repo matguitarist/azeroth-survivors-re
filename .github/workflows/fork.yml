@@ -1,0 +1,85 @@
+# This fork's own checks, on every push to main and every pull request: the Rust tests that need
+# no game data, the addons, and the macOS launcher. Upstream's ci.yml runs only for a pull request
+# from someone else's fork, and its fmt and clippy gates fail on upstream's own drift, so they are
+# left to a later formatting pass.
+name: fork
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      # Set and empty: no 1.12 install, so the data-gated tests skip.
+      WOW_DATA: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: System libraries
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: Toolchain
+        run: rustup toolchain install && rustc -V
+      - uses: Swatinem/rust-cache@v2
+      - name: The game builds, with and without the dev instruments
+        run: |
+          cargo build -p warcraft-survivors
+          cargo check -p warcraft-survivors --no-default-features
+      - name: Survivors and the engine pieces this fork added
+        run: cargo test -p benilla-app --lib -- survivors smart_rect fps_cap render_budget post_aa
+
+  addons:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Lua 5.1, the closest to the 1.12 client's 5.0
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua5.1
+      - name: Every addon file parses
+        run: for f in addons/*/*.lua; do luac5.1 -p "$f" || exit 1; done
+      - name: Quest markers against a stubbed client
+        run: lua5.1 scripts/addon-tests/questmap.lua addons/AzerothPlus
+      - name: The home-server scripts parse
+        run: for f in macos/Server/CMaNGOS/home-* scripts/questdb-dump.sh; do bash -n "$f" || exit 1; done
+      - name: The quest data builder compiles
+        run: python3 -m py_compile scripts/questdb.py
+
+  launcher:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Sparkle, as scripts/macos-app.sh fetches it
+        run: |
+          v=$(sed -n 's/^SPARKLE_VERSION="\(.*\)"/\1/p' scripts/macos-app.sh)
+          sum=$(sed -n 's/^SPARKLE_SHA256="\(.*\)"/\1/p' scripts/macos-app.sh)
+          mkdir -p sparkle
+          curl -fsSL -o sparkle.tar.xz "https://github.com/sparkle-project/Sparkle/releases/download/$v/Sparkle-$v.tar.xz"
+          echo "$sum  sparkle.tar.xz" | shasum -a 256 -c -
+          tar -xf sparkle.tar.xz -C sparkle
+      - name: The launcher typechecks
+        run: |
+          xcrun swiftc -swift-version 5 -parse-as-library -typecheck -target arm64-apple-macos14.0 \
+            -module-name AzerothSurvivors -F sparkle macos/Launcher/*.swift

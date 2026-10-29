@@ -347,24 +347,40 @@ fn readback(stamp: Option<ResMut<GpuStamp>>) {
     stamp.frame += 1;
 }
 
+#[cfg(feature = "dev")]
 pub(crate) fn plugin(app: &mut App) {
     if !enabled() {
         return;
     }
-    let shared = Arc::new(AtomicU64::new(0));
     let counts = Arc::new(WgpuCensus::default());
-    app.insert_resource(GpuMsShared(shared.clone()));
     app.insert_resource(WgpuCensusShared(counts.clone()));
+    if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        render_app.insert_resource(WgpuCensusShared(counts));
+        render_app.add_systems(
+            Render,
+            (census, count_draws)
+                .after(readback)
+                .in_set(RenderSystems::Cleanup),
+        );
+    }
+    meter(app);
+}
+
+/// The meter alone, without the census: what the player build's dynamic resolution reads
+/// (`render_budget`). Installed once, by whichever asks first.
+pub(crate) fn meter(app: &mut App) {
+    if app.world().contains_resource::<GpuMsShared>() {
+        return;
+    }
+    let shared = Arc::new(AtomicU64::new(0));
+    app.insert_resource(GpuMsShared(shared.clone()));
     let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
         return;
     };
     render_app.insert_resource(GpuMsShared(shared));
-    render_app.insert_resource(WgpuCensusShared(counts));
     render_app.add_systems(
         Render,
-        (init_stamp, readback, census, count_draws)
-            .chain()
-            .in_set(RenderSystems::Cleanup),
+        (init_stamp, readback).chain().in_set(RenderSystems::Cleanup),
     );
     let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
     graph.add_node(GpuStampBeginLabel, GpuStampNode { index: 0 });

@@ -20,6 +20,7 @@ local DEFAULTS = {
   objectives = false,
   objectivesFolded = false,
   map = false,
+  questMarkers = true,
   untracked = {},
   mapFolded = {},
   positions = {},

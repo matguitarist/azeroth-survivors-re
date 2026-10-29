@@ -705,6 +705,31 @@ pub(crate) const REGISTERED: &[Registered] = &[
         "benilla's own — the reference has no off-screen buffer to hang a resolution dial \
          on; its nearest equivalent, `gxResolution`, drops the interface with the world",
     ),
+    // benilla's own, spelled as the later clients' frame caps: frames per second while focused and
+    // while not, 0 for none. The knob is [`crate::fps_cap::FpsCap`].
+    ours(
+        "maxFPS",
+        "0",
+        "benilla's own — 1.12 has no frame cap but vertical sync; later clients add these two",
+    ),
+    ours(
+        "maxFPSBk",
+        "30",
+        "benilla's own — 1.12 draws at full rate behind other windows",
+    ),
+    // benilla's own: SMAA on the world's target, live. The knob is [`crate::post_aa::SmaaSetting`].
+    ours(
+        "smaa",
+        "1",
+        "benilla's own — 1.12's only anti-aliasing is multisampling (`gxMultisample`)",
+    ),
+    // benilla's own: below `renderScale` 1's pixel budget, the world's resolution follows the GPU
+    // time. The knob is [`crate::render_budget::Dynamic`].
+    ours(
+        "dynamicResolution",
+        "1",
+        "benilla's own — 1.12 renders the world and the interface in one buffer at one size",
+    ),
     // benilla's own: `/console fpsJournal 1` appends a per-second row of position, frame cost and
     // per-pass GPU time to `benilla-config/Diagnostics/fps-journal.csv`. The knob is
     // [`crate::perf::FpsJournalSetting`].

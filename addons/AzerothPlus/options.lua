@@ -14,6 +14,7 @@ local ROWS = {
   { "minimap", "Minimap: coordinates, buffs moved off it" },
   { "objectives", "All objectives: every quest, every objective" },
   { "map", "Map & quest log: a smaller map with its quests" },
+  { "questMarkers", "Quest markers on the map and minimap" },
 }
 
 local panel = CreateFrame("Frame", "AzerothPlusOptions", UIParent)

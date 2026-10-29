@@ -39,12 +39,16 @@ const ORDER: [[u8; 4]; 9] = [
 
 /// One claim bucket, the rects placed this frame; the first claimed never moves.
 #[derive(Default)]
-pub(crate) struct SmartBucket(Vec<Rect>);
+pub(crate) struct SmartBucket {
+    claimed: Vec<Rect>,
+    grid: Grid,
+}
 
 impl SmartBucket {
     /// The per-frame reset (`0x509500`).
     pub(crate) fn clear(&mut self) {
-        self.0.clear();
+        self.claimed.clear();
+        self.grid.clear();
     }
 
     /// The seat without the claim. Deviation: the plate caller snaps the result to device
@@ -66,7 +70,15 @@ impl SmartBucket {
 
     /// `0x509660`.
     pub(crate) fn claim(&mut self, rect: Rect) {
-        self.0.push(rect);
+        self.grid.insert(rect, self.claimed.len() as u32);
+        self.claimed.push(rect);
+    }
+
+    /// The first claimed rect strictly overlapping `r`, in claim order (`0x509220`'s scan).
+    fn first_overlap(&self, r: Rect) -> Option<Rect> {
+        self.grid
+            .first(r, |i| overlaps(r, self.claimed[i as usize]))
+            .map(|i| self.claimed[i as usize])
     }
 
     /// The bounded BFS (`0x5097a0`).
@@ -85,8 +97,10 @@ impl SmartBucket {
             if band_flags(node, viewport) != 0 {
                 continue;
             }
+            // Every try of a node pushes off the same blocker, so it is looked up once.
+            let blocker = self.first_overlap(node);
             for strategy in ORDER[region as usize] {
-                let candidate = push(&self.0, node, strategy);
+                let candidate = push(blocker, node, strategy);
                 if candidate == node {
                     return candidate; // unmoved: overlaps nothing
                 }
@@ -204,11 +218,8 @@ fn region_index(flags: u8) -> u8 {
 
 /// One try (`0x808870`, `0x509220`): push edge-to-edge off the first strict overlap
 /// (`0x5091c0`, `0x509300`, `0x509360`, `0x5093c0`), or return the node unchanged.
-fn push(claimed: &[Rect], r: Rect, strategy: u8) -> Rect {
-    let Some(c) = claimed
-        .iter()
-        .find(|c| r.max.x > c.min.x && r.min.x < c.max.x && r.max.y > c.min.y && r.min.y < c.max.y)
-    else {
+fn push(blocker: Option<Rect>, r: Rect, strategy: u8) -> Rect {
+    let Some(c) = blocker else {
         return r;
     };
     let mut r = r;
@@ -237,6 +248,79 @@ fn push(claimed: &[Rect], r: Rect, strategy: u8) -> Rect {
         }
     }
     r
+}
+
+/// The strict overlap (`0x509220`): touching edges do not overlap.
+fn overlaps(r: Rect, c: Rect) -> bool {
+    r.max.x > c.min.x && r.min.x < c.max.x && r.max.y > c.min.y && r.min.y < c.max.y
+}
+
+/// Deviation, for speed only: the claims binned by [`CELL`]-pixel cell, so a try tests its
+/// neighbours instead of every claim. A survivors fight claims hundreds of damage numbers a frame
+/// and each solve tries up to thousands of nodes. Rects past the grid fall in its edge cells and
+/// overlapping rects always share a cell, so the lowest claim index found is the linear scan's.
+#[derive(Default)]
+struct Grid {
+    /// `SIDE * SIDE` cells of claim indices, ascending; allocated at the first claim.
+    cells: Vec<Vec<u32>>,
+    /// The cells holding claims, emptied by [`Grid::clear`].
+    used: Vec<usize>,
+}
+
+const CELL: f32 = 64.0;
+const SIDE: usize = 64;
+
+impl Grid {
+    fn clear(&mut self) {
+        for &cell in &self.used {
+            self.cells[cell].clear();
+        }
+        self.used.clear();
+    }
+
+    fn insert(&mut self, r: Rect, index: u32) {
+        if self.cells.is_empty() {
+            self.cells = vec![Vec::new(); SIDE * SIDE];
+        }
+        for cell in cells(r) {
+            if self.cells[cell].is_empty() {
+                self.used.push(cell);
+            }
+            self.cells[cell].push(index);
+        }
+    }
+
+    /// The lowest index under `r`'s cells that `hit` accepts.
+    fn first(&self, r: Rect, hit: impl Fn(u32) -> bool) -> Option<u32> {
+        if self.used.is_empty() {
+            return None;
+        }
+        let mut best: Option<u32> = None;
+        for cell in cells(r) {
+            // Ascending per cell: the first hit is the cell's lowest, and past `best` none helps.
+            for &i in &self.cells[cell] {
+                if best.is_some_and(|b| i >= b) {
+                    break;
+                }
+                if hit(i) {
+                    best = Some(i);
+                    break;
+                }
+            }
+        }
+        best
+    }
+}
+
+/// The cells `r` covers. Its hull is taken, so an inverted rect bins like the linear scan tests it,
+/// and a NaN edge maps to cell 0 (a NaN rect overlaps nothing either way).
+fn cells(r: Rect) -> impl Iterator<Item = usize> {
+    let span = |a: f32, b: f32| {
+        let at = |v: f32| (v / CELL).floor().clamp(0.0, (SIDE - 1) as f32) as usize;
+        at(a.min(b))..=at(a.max(b))
+    };
+    let (xs, ys) = (span(r.min.x, r.max.x), span(r.min.y, r.max.y));
+    ys.flat_map(move |y| xs.clone().map(move |x| y * SIDE + x))
 }
 
 #[cfg(test)]
@@ -362,5 +446,39 @@ mod tests {
         seat(&mut b, Rect::new(500.0, 380.0, 540.0, 400.0));
         let below = Rect::new(500.0, 400.0, 540.0, 420.0);
         assert_eq!(seat(&mut b, below), below);
+    }
+
+    /// The grid finds the linear scan's blocker, past the grid, inverted and degenerate included.
+    #[test]
+    fn grid_matches_the_linear_scan() {
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move |lo: f32, hi: f32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            #[allow(clippy::cast_precision_loss)]
+            let unit = seed as f32 / u32::MAX as f32;
+            lo + (hi - lo) * unit
+        };
+        let rect = |next: &mut dyn FnMut(f32, f32) -> f32| {
+            let (x, y) = (next(-500.0, 5000.0), next(-500.0, 5000.0));
+            Rect::from_corners(
+                Vec2::new(x, y),
+                Vec2::new(x + next(-20.0, 300.0), y + next(-20.0, 150.0)),
+            )
+        };
+        let mut b = SmartBucket::default();
+        for round in 0..20 {
+            b.clear();
+            for _ in 0..(round * 25) {
+                b.claim(rect(&mut next));
+            }
+            b.claim(Rect::new(-1e30, -1e30, f32::INFINITY, f32::INFINITY));
+            for _ in 0..500 {
+                let r = rect(&mut next);
+                let linear = b.claimed.iter().copied().find(|&c| overlaps(r, c));
+                assert_eq!(b.first_overlap(r), linear, "round {round}, {r:?}");
+            }
+        }
     }
 }

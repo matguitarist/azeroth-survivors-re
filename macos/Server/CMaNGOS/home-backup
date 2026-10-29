@@ -1,0 +1,73 @@
+#!/bin/bash
+# Backups of a home server's accounts and characters (`classicrealmd`, `classiccharacters`; the
+# world database is rebuilt by setup), one gzipped dump each, the newest $KEEP kept. The launcher
+# runs it over SSH; setup schedules it nightly.
+#
+#   home-backup now              dump now, prune, print the file's name
+#   home-backup list             the dumps, newest first: name, bytes, epoch seconds
+#   home-backup restore <name>   stop the game, load the dump (a fresh one is taken first), start
+#   home-backup schedule         run `now` nightly at 04:30
+#
+# On Unraid the dumps go to the array's `backups` share, a different disk from appdata on the
+# cache pool, so one disk failing cannot take the server and its backups together.
+set -euo pipefail
+cd "$(dirname "$0")"
+p=azeroth-survivors-cmangos
+db=$p-database-1
+keep=${KEEP:-14}
+if [[ -d /mnt/user ]]; then dir=/mnt/user/backups/$p; else dir=$PWD/backups; fi
+mkdir -p "$dir"
+
+dump() {
+    local f="$dir/$(date +%Y-%m-%d-%H%M%S)${1:+-$1}.sql.gz"
+    docker exec "$db" mariadb-dump -umangos -pmangos --single-transaction --quick \
+        --databases classicrealmd classiccharacters | gzip >"$f.part"
+    mv "$f.part" "$f"
+    # The newest $keep nightly or manual dumps; the ones taken before a restore are kept apart.
+    # (`|| true`: a glob that matches nothing is no error here.)
+    { ls -1t "$dir"/*.sql.gz 2>/dev/null || true; } | { grep -v -- '-before-restore' || true; } |
+        tail -n +$((keep + 1)) | xargs -r rm --
+    { ls -1t "$dir"/*-before-restore.sql.gz 2>/dev/null || true; } | tail -n +4 | xargs -r rm --
+    basename "$f"
+}
+
+case "${1:-}" in
+now)
+    dump
+    ;;
+list)
+    for f in $(ls -1t "$dir"/*.sql.gz 2>/dev/null || true); do
+        printf '%s %s %s\n' "$(basename "$f")" "$(stat -c %s "$f")" "$(stat -c %Y "$f")"
+    done
+    ;;
+restore)
+    name=${2:-}
+    [[ $name =~ ^[0-9-]+(-before-restore)?\.sql\.gz$ && -f $dir/$name ]] ||
+        { echo "no such backup: $name" >&2; exit 1; }
+    dump before-restore >/dev/null
+    # The game server writes characters back from memory, so it must be down while they load.
+    ./home-compose stop realmd mangosd
+    gunzip -c "$dir/$name" | docker exec -i "$db" mariadb -umangos -pmangos
+    ./home-compose up -d database realmd mangosd
+    echo "restored $name"
+    ;;
+schedule)
+    # Run on every look by the launcher: a schedule already in place is left alone.
+    line="30 4 * * * $PWD/home-backup now >/dev/null 2>&1"
+    if [[ -d /boot/config/plugins/dynamix ]]; then
+        # Unraid rebuilds root's crontab from these files at boot (`update_cron`).
+        cron=/boot/config/plugins/dynamix/azeroth-survivors-backup.cron
+        if ! grep -qxF "$line" "$cron" 2>/dev/null; then
+            printf '# Azeroth Survivors server backups:\n%s\n' "$line" >"$cron"
+            update_cron
+        fi
+    elif ! crontab -l 2>/dev/null | grep -qxF "$line"; then
+        { crontab -l 2>/dev/null | grep -v 'home-backup now' || true; echo "$line"; } | crontab -
+    fi
+    echo scheduled
+    ;;
+*)
+    echo "usage: home-backup now|list|restore <name>|schedule" >&2
+    exit 2
+    ;;
+esac

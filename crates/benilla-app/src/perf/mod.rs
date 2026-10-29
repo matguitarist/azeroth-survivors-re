@@ -27,7 +27,8 @@ mod census;
 mod clock;
 #[cfg(feature = "dev")]
 mod crash_inject;
-#[cfg(feature = "dev")]
+// The census half is the dev side's; the whole-frame meter also feeds dynamic resolution.
+#[cfg_attr(not(feature = "dev"), allow(dead_code))]
 mod gpu;
 #[cfg(feature = "dev")]
 mod hud;
@@ -50,8 +51,10 @@ use bevy::prelude::*;
 pub(crate) use blend_check::BlendMismatchShared;
 #[cfg(feature = "dev")]
 pub(crate) use clock::{process_cpu_secs, process_faults, system_cpu_ticks, thread_cpu_table};
+pub(crate) use gpu::meter as gpu_meter;
+pub(crate) use gpu::GpuMsShared;
 #[cfg(feature = "dev")]
-pub(crate) use gpu::{GpuMsShared, WgpuCensusShared};
+pub(crate) use gpu::WgpuCensusShared;
 #[cfg(feature = "dev")]
 pub(crate) use hud::PerfHud;
 pub(crate) use journal::FpsJournalPlugin;

@@ -56,6 +56,34 @@ const VERDICTS: &[(&str, Verdict)] = &[
         Open("the present-mode throttle: a load behind another window must still throttle"),
     ),
     (
+        "Gamepad",
+        Open(
+            "read only by Survivors (`survivors/pad.rs`), whose menus and runs have no loading cover; Classic reads no controller",
+        ),
+    ),
+    (
+        "GamepadButton",
+        Open(
+            "read only by Survivors (`survivors/pad.rs`), whose menus and runs have no loading cover; Classic reads no controller",
+        ),
+    ),
+    (
+        "GamepadConnection",
+        Open(
+            "read only by Survivors (`survivors/pad.rs`), whose menus and runs have no loading cover; Classic reads no controller",
+        ),
+    ),
+    (
+        "GamepadConnectionEvent",
+        Open(
+            "read only by Survivors (`survivors/pad.rs`), whose menus and runs have no loading cover; Classic reads no controller",
+        ),
+    ),
+    (
+        "PrimaryMonitor",
+        Open("not input: `render_budget` reads the display's refresh rate for its frame target"),
+    ),
+    (
         "CursorOptions",
         Open("an OUTPUT (grab/visible), not a channel — the cover has nothing to take from it"),
     ),

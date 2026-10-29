@@ -17,5 +17,6 @@ step "Reading the maps from the game files…" dc --profile tools run --rm -T ex
 step "Building the movement maps the bots walk on…" dc --profile tools run --rm -T build-mmaps
 step "Building the world database…" dc --profile tools run --rm -T install
 step "Creating the bots…" dc up -d database realmd mangosd
+step "Scheduling nightly backups…" ./home-backup schedule
 touch .setup-done
 echo "== $(date '+%F %T') done"

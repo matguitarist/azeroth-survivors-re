@@ -109,12 +109,24 @@ const OFF_ON: &[(&str, &str)] = &[("0", "Off"), ("1", "On")];
 const LOW_HIGH: &[(&str, &str)] = &[("0", "Low"), ("1", "Medium"), ("2", "High")];
 
 /// The 1.12 Video Options the engine applies, and its own render scale.
-const CHOICES: [Choice; 9] = [
+const CHOICES: [Choice; 11] = [
     Choice {
         label: "Vertical Sync",
         cvar: "gxVSync",
         stops: OFF_ON,
         latched: true,
+    },
+    Choice {
+        label: "Max Frame Rate",
+        cvar: "maxFPS",
+        stops: &[("0", "None"), ("30", "30"), ("60", "60"), ("120", "120")],
+        latched: false,
+    },
+    Choice {
+        label: "Edge Smoothing",
+        cvar: "smaa",
+        stops: OFF_ON,
+        latched: false,
     },
     Choice {
         label: "Anti-aliasing *",

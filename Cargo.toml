@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["sam <samuv.eth@gmail.com>"]
@@ -29,6 +29,8 @@ bevy = { version = "0.18.1", default-features = false, features = [
     "ui_bevy_render",
     "scene",
     "picking",
+    # SMAA's lookup textures (`post_aa`).
+    "smaa_luts",
 ] }
 # For the `WOW_GPU_MS` meter's query set, which bevy 0.18 does not wrap; must match bevy's wgpu.
 wgpu = "27"

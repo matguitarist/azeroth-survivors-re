@@ -72,14 +72,25 @@ The launcher:
   there is none, as on Unraid) with `compose.lan.yaml` on top: ports on the LAN address, restarts
   with the machine, kept running when the game quits. Accounts are the same `--account-sql` and
   SQL, fed to `docker exec` of its database; the bot count rewrites `.env` and recreates
-  `mangosd`. Nothing is forwarded to the internet.
+  `mangosd`. Nothing is forwarded to the internet. `home-backup` dumps the accounts and characters
+  nightly at 4:30 (a dynamix cron file on Unraid, else root's crontab; to
+  `/mnt/user/backups/azeroth-survivors-cmangos`, else `backups/`, 14 kept), and Settings › Home Server backs up and restores on demand, a restore saving the state
+  it replaces first. `home-update check` compares the commits the image was built from (`.refs`,
+  else the Dockerfile's pins) with the newest on GitHub; Update Server… starts `home-update run`
+  detached (`.update-step`, `update.log`): it backs up, rebuilds the image, reinstalls the world
+  database from classic-db with the core's migrations (never `-InstallAll`), rebuilds the movement
+  maps only when their format moved, and on any failure puts back the old image, world, maps and
+  backup. It refuses a core whose terrain or line-of-sight format moved, which vmangos's extractor
+  cannot follow.
 - **Installs AzerothPlus and AzerothAdmin** for Classic (`Addons.swift`, Settings › General):
   before each Classic launch the shipped addons replace their folders in `benilla-config/AddOns`,
   so the app's version is the one that runs; other addons there are untouched, and saved settings
   live in `benilla-config/saved`. AzerothPlus (`/ap` or its minimap button) adds a cooldown manager, a
   damage meter, a swing timer, a personal resource display, smaller centered unit frames, an "All
-  objectives" tracker, a windowed map with the zone's quests, minimap coordinates and movable buff
-  icons, each a box in its options. AzerothAdmin sends vmangos GM commands, respelled for CMaNGOS
+  objectives" tracker, a windowed map with the zone's quests, quest markers on the map and minimap
+  (`questmap.lua`; its places, `questdb.lua`, come from the CMaNGOS world database through
+  `scripts/questdb-dump.sh` and `scripts/questdb.py`), minimap coordinates and movable buff icons,
+  each a box in its options. AzerothAdmin sends vmangos GM commands, respelled for CMaNGOS
   (`AA.CMANGOS`, with its own Bots page), so it needs an administrator account (`gmlevel` 6 on
   vmangos, 3 on CMaNGOS, set per account in Settings › Server; new accounts default to it). The shipped `mangosd.conf` starts a GM as a player (`GM.LoginState = 0`,
   `GM.Visible = 1`, `GM.CheatGod = 0`); `migrateConf` applies that once to older copies

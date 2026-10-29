@@ -34,6 +34,10 @@ struct HomeServerPanel: View {
                 busy(step)
                 note("The setup runs on the server: you can quit the launcher and come back.")
 
+            case .updating(let step):
+                busy("Updating: \(step)")
+                note("The update runs on the server: you can quit the launcher and come back. The game is down until it ends.")
+
             case .busy(let what):
                 busy(what)
 
@@ -160,6 +164,8 @@ struct HomeServerSettings: View {
     @State private var newAccount = false
     @State private var passwordFor: String?
     @State private var confirmRemove = false
+    @State private var restoring: HomeServer.Backup?
+    @State private var confirmUpdate = false
     @State private var bots = 100
 
     var body: some View {
@@ -220,6 +226,56 @@ struct HomeServerSettings: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
+                Section("Backups") {
+                    ForEach(home.backups.prefix(5)) { backup in
+                        HStack {
+                            Text(backup.date.formatted(date: .abbreviated, time: .shortened))
+                            if backup.beforeRestore {
+                                Text("before a restore").foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(backup.bytes), countStyle: .file))
+                                .foregroundStyle(.secondary)
+                            Button("Restore…") { restoring = backup }
+                        }
+                    }
+                    if home.backups.isEmpty {
+                        Text("No backups yet.").foregroundStyle(.secondary)
+                    }
+                    Button("Back Up Now") { Task { await home.backUpNow() } }
+                    Text("Every night at 4:30 the server saves its accounts and characters\(onUnraid ? " to the array's backups share, a different disk from the server itself" : ""); the last 14 nights are kept.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .disabled(home.isBusy || game.running)
+
+                Section("Server software") {
+                    if let software = home.software {
+                        ForEach(software.repos, id: \.name) { repo in
+                            LabeledContent(repo.name) {
+                                Text(repo.current ? "\(repo.built.prefix(7)), the newest"
+                                                  : "\(repo.built.prefix(7)) → \(repo.newest.prefix(7))")
+                                    .monospacedDigit()
+                                    .foregroundStyle(repo.current ? .secondary : .primary)
+                            }
+                        }
+                    }
+                    if let failed = home.updateFailed {
+                        Label(failed, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    HStack {
+                        Button("Check for Updates") { Task { await home.checkForUpdates() } }
+                        if let software = home.software, !software.current, !software.blocked {
+                            Button("Update Server…") { confirmUpdate = true }
+                        }
+                    }
+                    Text(softwareNote)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .disabled(home.isBusy || game.running)
+
                 Section {
                     Button("Remove Home Server…", role: .destructive) { confirmRemove = true }
                         .disabled(home.isBusy || game.running)
@@ -242,6 +298,34 @@ struct HomeServerSettings: View {
         } message: {
             Text("Its containers, databases, image and folder on \(home.address) are deleted. This cannot be undone.")
         }
+        .confirmationDialog("Update the server to the newest CMaNGOS?", isPresented: $confirmUpdate) {
+            Button("Update") { Task { await home.update() } }
+        } message: {
+            Text("The server builds the new version first, then stops the game for the rest: \(home.software?.mmaps == true ? "an hour or two, as the bots' movement maps are built again" : "about twenty minutes"). Accounts and characters are kept, and backed up first; if anything fails, the old server is put back.")
+        }
+        .confirmationDialog("Restore the backup of \(restoring?.date.formatted(date: .abbreviated, time: .shortened) ?? "")?",
+                            isPresented: Binding(get: { restoring != nil }, set: { if !$0 { restoring = nil } }),
+                            presenting: restoring) { backup in
+            Button("Restore") { Task { await home.restore(backup) } }
+        } message: { _ in
+            Text("Every account and character goes back to that moment: what was played since is lost. Everyone is signed out while the server restarts, and the current state is backed up first, so this can be undone.")
+        }
+    }
+
+    /// Unraid's backups share, where `home-backup` keeps them there.
+    private var onUnraid: Bool {
+        UserDefaults.standard.string(forKey: Prefs.homeDirKey)?.hasPrefix("/mnt/user/") == true
+    }
+
+    private var softwareNote: String {
+        guard let software = home.software else {
+            return "CMaNGOS, its playerbots and its world database, built from source on the server. Check for Updates compares them with the newest on GitHub."
+        }
+        let since = software.updated.map { " Last updated \($0.formatted(date: .abbreviated, time: .shortened))." } ?? ""
+        if software.blocked {
+            return "The newest CMaNGOS reads maps in a format this server's map tools do not write yet, so it cannot update for now.\(since)"
+        }
+        return (software.current ? "Everything is at its newest." : "An update keeps every account and character.") + since
     }
 
     private var statusText: String {
@@ -252,6 +336,7 @@ struct HomeServerSettings: View {
         case .noDocker: "No Docker on the server"
         case .notSetUp: "Not set up"
         case .settingUp(let step): "Setting up: \(step)"
+        case .updating(let step): "Updating: \(step)"
         case .busy(let what): what
         case .stopped: "Stopped"
         case .running: "Running at \(home.address)"
@@ -277,12 +362,17 @@ struct HomeServerSettings: View {
 private struct HomeServerPolling: ViewModifier {
     @EnvironmentObject private var home: HomeServer
 
-    private var settingUp: Bool { if case .settingUp = home.phase { true } else { false } }
+    private var following: Bool {
+        switch home.phase {
+        case .settingUp, .updating: true
+        default: false
+        }
+    }
 
     func body(content: Content) -> some View {
-        content.task(id: settingUp) {
-            // Follow a setup running on the server while this view is open.
-            while settingUp {
+        content.task(id: following) {
+            // Follow a setup or an update running on the server while this view is open.
+            while following {
                 try? await Task.sleep(nanoseconds: 20_000_000_000)
                 await home.refresh()
             }

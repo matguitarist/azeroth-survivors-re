@@ -426,9 +426,8 @@ pub(super) fn drive(
     }
 }
 
-/// With `WOW_GPU_MS=1`: the whole-frame GPU time each ten seconds, median and 90th percentile,
-/// beside the run's own line; the frame rate alone cannot tell the GPU from the main thread.
-#[cfg(feature = "dev")]
+/// The whole-frame GPU time each ten seconds, median and 90th percentile, beside the run's own
+/// line; the frame rate alone cannot tell the GPU from the main thread.
 pub(super) fn gpu_log(
     time: Res<Time<Real>>,
     gpu: Option<Res<crate::perf::GpuMsShared>>,

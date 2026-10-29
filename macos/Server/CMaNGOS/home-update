@@ -1,0 +1,166 @@
+#!/bin/bash
+# Moves a home server to the newest CMaNGOS Classic, playerbots and classic-db, keeping every
+# account and character. The launcher runs `check` over SSH and starts `run` detached, as it does
+# `home-setup`: `.update-step` holds the step in progress, then `.update-done` or `.update-failed`,
+# the output goes to `update.log`.
+#
+#   home-update check   the built and the newest commits, one `name built newest` line each;
+#                       `mmaps yes` when the newest core wants its movement maps built again, and
+#                       `blocked yes` when it reads terrain or line of sight in a format vmangos's
+#                       extractor (`compose.yaml`) does not write, which no update can follow;
+#                       `updated <time>` when an update last finished
+#   home-update run     the update
+#
+# The run backs up first and keeps the image it replaces. The world database is rebuilt from the
+# new classic-db (it holds no player data), the core's migrations bring the character and realm
+# databases forward, and playerbots' character tables are reloaded only when their SQL changed
+# (that resets the bots, not the players). The movement maps are built again only when their
+# format moved. Anything failing after the server stops puts back the old image, the old world
+# database, the old movement maps and the backup.
+set -euo pipefail
+cd "$(dirname "$0")"
+p=azeroth-survivors-cmangos
+image=$p:1
+dc() { ./home-compose "$@"; }
+repos=(mangos-classic playerbots classic-db)
+args=(CMANGOS_REF PLAYERBOTS_REF CLASSICDB_REF)
+
+# What the image was built from: `.refs` after an update, else the recipe's pins.
+built() {
+    local v
+    v=$(sed -n "s/^$1=//p" .refs 2>/dev/null)
+    [ -n "$v" ] || v=$(sed -n "s/^ARG $1=//p" Dockerfile)
+    echo "$v"
+}
+
+newest() {
+    curl -fsSL -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/cmangos/$1/commits/master"
+}
+
+raw() { curl -fsSL "https://raw.githubusercontent.com/cmangos/mangos-classic/$1/$2"; }
+
+# Whether a core file differs between two commits; one that cannot be fetched counts as changed.
+moved() {
+    local a b
+    a=$(raw "$2" "$1") || return 0
+    b=$(raw "$3" "$1") || return 0
+    [ "$a" != "$b" ]
+}
+mmaps_moved() { moved src/game/MotionGenerators/MoveMapSharedDefines.h "$1" "$2"; }
+# Terrain and line of sight come from vmangos's extractor, so their formats cannot follow the core.
+blocked() { moved src/game/vmap/VMapDefinitions.h "$1" "$2" || moved src/game/Maps/GridMapDefines.h "$1" "$2"; }
+
+# Whether playerbots' character SQL differs between two commits.
+bot_sql_moved() {
+    curl -fsSL "https://api.github.com/repos/cmangos/playerbots/compare/$1...$2" |
+        grep -q '"filename": "sql/characters/'
+}
+
+case "${1:-}" in
+check)
+    for i in 0 1 2; do
+        echo "${repos[$i]} $(built "${args[$i]}") $(newest "${repos[$i]}")"
+    done
+    old=$(built CMANGOS_REF) new=$(newest mangos-classic)
+    if [ "$old" != "$new" ] && mmaps_moved "$old" "$new"; then echo "mmaps yes"; else echo "mmaps no"; fi
+    if [ "$old" != "$new" ] && blocked "$old" "$new"; then echo "blocked yes"; else echo "blocked no"; fi
+    echo "updated $(sed -n 's/^UPDATED=//p' .refs 2>/dev/null)"
+    exit 0
+    ;;
+run) ;;
+*)
+    echo "usage: home-update check|run" >&2
+    exit 2
+    ;;
+esac
+
+echo $$ > .update-pid
+rm -f .update-done .update-failed
+stopped=0
+backup=""
+finish() {
+    local ok=$?
+    if [ $ok -ne 0 ] && [ ! -f .update-done ]; then
+        if [ $stopped = 1 ]; then
+            echo "== $(date '+%F %T') failed; putting back the old server"
+            echo "Putting back the old server…" > .update-step
+            docker tag "$p:previous" "$image" || true
+            if [ -d storage/data/mmaps.previous ]; then
+                rm -rf storage/data/mmaps && mv storage/data/mmaps.previous storage/data/mmaps
+            fi
+            { db "$world" && db "$bot_world"; } || true
+            if [ -n "$backup" ]; then ./home-backup restore "$backup" || true; else dc up -d database realmd mangosd || true; fi
+        fi
+        touch .update-failed
+    fi
+    rm -f .update-pid
+}
+trap finish EXIT
+step() { echo "$1" > .update-step; echo "== $(date '+%F %T') $1" >&2; shift; "$@"; }
+db() { dc --profile tools run --rm -T --no-deps install bash -c "$1"; }
+# The world from the image's classic-db, then the core's migrations for every database. Never
+# `-InstallAll`: it drops the characters.
+world='cd /opt/cmangos/classic-db && TERM=dumb ./InstallFullDB.sh -World && TERM=dumb ./InstallFullDB.sh -UpdateCore'
+bot_world='for f in /opt/cmangos/core/src/modules/PlayerBots/sql/world/*.sql /opt/cmangos/core/src/modules/PlayerBots/sql/world/classic/*.sql; do [ -e "$f" ] && mariadb -hdatabase -umangos -pmangos classicmangos < "$f"; done; true'
+
+
+declare -A to
+for i in 0 1 2; do to[${args[$i]}]=$(newest "${repos[$i]}"); done
+for a in "${args[@]}"; do
+    [[ ${to[$a]} =~ ^[0-9a-f]{40}$ ]] || { echo "no commit for $a: ${to[$a]}"; exit 1; }
+done
+from_core=$(built CMANGOS_REF) from_bots=$(built PLAYERBOTS_REF)
+if [ "$from_core" = "${to[CMANGOS_REF]}" ] && [ "$from_bots" = "${to[PLAYERBOTS_REF]}" ] &&
+    [ "$(built CLASSICDB_REF)" = "${to[CLASSICDB_REF]}" ]; then
+    echo "already up to date"
+    touch .update-done
+    exit 0
+fi
+mmaps=0
+if [ "$from_core" != "${to[CMANGOS_REF]}" ]; then
+    blocked "$from_core" "${to[CMANGOS_REF]}" &&
+        { echo "the newest core reads maps in a format this server cannot make yet"; exit 1; }
+    mmaps_moved "$from_core" "${to[CMANGOS_REF]}" && mmaps=1
+fi
+reload_bots=0
+[ "$from_bots" != "${to[PLAYERBOTS_REF]}" ] && bot_sql_moved "$from_bots" "${to[PLAYERBOTS_REF]}" && reload_bots=1
+echo "from core $from_core bots $from_bots; to ${to[*]}; movement maps $mmaps; bot tables $reload_bots"
+
+backup=$(step "Backing up accounts and characters…" ./home-backup now)
+echo "backup $backup"
+docker tag "$image" "$p:previous"
+build=()
+for a in "${args[@]}"; do build+=(--build-arg "$a=${to[$a]}"); done
+step "Building the new server from source…" dc build "${build[@]}" realmd
+
+stopped=1
+step "Stopping the game…" dc stop realmd mangosd
+if [ $mmaps = 1 ]; then
+    rm -rf storage/data/mmaps.previous
+    cp -a storage/data/mmaps storage/data/mmaps.previous
+    step "Building the movement maps the bots walk on…" dc --profile tools run --rm -T build-mmaps
+fi
+step "Updating the world database…" db "$world"
+step "Adding the bots' world data…" db "$bot_world"
+if [ $reload_bots = 1 ]; then
+    step "Reloading the bots' tables…" db 'for f in /opt/cmangos/core/src/modules/PlayerBots/sql/characters/*.sql; do mariadb -hdatabase -umangos -pmangos classiccharacters < "$f"; done'
+fi
+
+step "Starting the new server…" dc up -d database realmd mangosd
+for _ in $(seq 1 90); do
+    r=$(docker inspect -f '{{.State.Health.Status}}' "$p-realmd-1" 2>/dev/null || true)
+    m=$(docker inspect -f '{{.State.Health.Status}}' "$p-mangosd-1" 2>/dev/null || true)
+    [ "$r" = healthy ] && [ "$m" = healthy ] && break
+    [ "$(docker inspect -f '{{.State.Running}}' "$p-mangosd-1" 2>/dev/null)" = true ] ||
+        { echo "the game server stopped"; exit 1; }
+    sleep 20
+done
+[ "$r" = healthy ] && [ "$m" = healthy ] || { echo "the game server did not come up in 30 minutes"; exit 1; }
+
+{
+    for a in "${args[@]}"; do echo "$a=${to[$a]}"; done
+    echo "UPDATED=$(date -u +%FT%TZ)"
+} > .refs
+rm -rf storage/data/mmaps.previous
+touch .update-done
+echo "== $(date '+%F %T') done"

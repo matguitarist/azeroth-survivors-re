@@ -22,6 +22,8 @@ final class HomeServer: ObservableObject {
         case notSetUp
         /// The setup runs on the server, at this step.
         case settingUp(String)
+        /// An update of the server's software runs on the server, at this step.
+        case updating(String)
         /// A step the launcher waits for: copying, start, stop.
         case busy(String)
         case stopped
@@ -37,6 +39,37 @@ final class HomeServer: ObservableObject {
     @Published private(set) var admins: Set<String> = []
     /// The random bots the server keeps (`BOTS` in its `.env`).
     @Published private(set) var bots: Int?
+    /// The server's backups of its accounts and characters, newest first (`home-backup list`).
+    @Published private(set) var backups: [Backup] = []
+    /// What the server runs and the newest of each, after Check for Updates (`home-update check`).
+    @Published private(set) var software: Software?
+    /// Why the last update did not finish, if it did not; the old server was put back.
+    @Published private(set) var updateFailed: String?
+
+    struct Software: Equatable {
+        struct Repo: Equatable {
+            let name: String
+            let built: String
+            let newest: String
+            var current: Bool { built == newest }
+        }
+        let repos: [Repo]
+        /// The movement maps are built again on the way: another hour or two.
+        let mmaps: Bool
+        /// The newest core reads maps this server cannot make yet.
+        let blocked: Bool
+        let updated: Date?
+        var current: Bool { repos.allSatisfy(\.current) }
+    }
+
+    struct Backup: Identifiable, Equatable {
+        let name: String
+        let bytes: Int
+        let date: Date
+        var id: String { name }
+        /// Taken by a restore, of the state it replaced.
+        var beforeRestore: Bool { name.contains("-before-restore") }
+    }
 
     static let shared = HomeServer()
     static let defaultKey = "~/.ssh/id_ed25519"
@@ -46,6 +79,8 @@ final class HomeServer: ObservableObject {
     private static let project = "azeroth-survivors-cmangos"
     private static let realmDB = "classicrealmd"
     /// The game files the map tools read, of the client's Data folder.
+    /// The recipe's scripts the launcher keeps current on the server.
+    private static let scripts = ["home-compose", "home-backup", "home-setup", "home-update"]
     private static let mpqs = ["dbc.MPQ", "terrain.MPQ", "model.MPQ", "texture.MPQ", "wmo.MPQ", "patch.MPQ", "patch-2.MPQ"]
 
     private init() {}
@@ -136,9 +171,16 @@ final class HomeServer: ObservableObject {
             phase = .settingUp(status["step"].map { $0.isEmpty ? "Starting…" : $0 } ?? "Starting…")
         case "failed":
             phase = .failed("The setup stopped at: \(status["step"] ?? "?") Show Log has the end of its output.")
+        case "done" where status["update"] == "running":
+            phase = .updating(status["updatestep"].map { $0.isEmpty ? "Starting…" : $0 } ?? "Starting…")
         case "done":
+            updateFailed = status["update"] == "failed"
+                ? "The last update stopped at: \(status["updatestep"] ?? "?") The old server was put back. Show Log has the end of its output."
+                : nil
             let up = status["realmd"] == "healthy" && status["mangosd"] == "healthy"
             phase = up ? .running : .stopped
+            await syncScripts()
+            await loadBackups()
             if up { await loadAccounts() }
         default:
             phase = .notSetUp
@@ -155,6 +197,9 @@ final class HomeServer: ObservableObject {
             elif [ -f .setup-failed ]; then echo state=failed
             else echo state=none; fi
             echo "step=$(cat .setup-step 2>/dev/null)"
+            if [ -f .update-pid ] && kill -0 "$(cat .update-pid)" 2>/dev/null; then echo update=running
+            elif [ -f .update-failed ]; then echo update=failed; fi
+            echo "updatestep=$(cat .update-step 2>/dev/null)"
             echo "bots=$(sed -n 's/^BOTS=//p' .env 2>/dev/null)"
             for s in realmd mangosd; do
               echo "$s=$(docker inspect -f '{{.State.Health.Status}}' \(Self.project)-$s-1 2>/dev/null)"
@@ -198,11 +243,11 @@ final class HomeServer: ObservableObject {
             }
             phase = .busy("Copying the server's recipe…")
             try await ssh("mkdir -p \(folder)/storage/client-data/Data")
-            try await rsync([recipe.path + "/"], to: folder + "/")
+            try await rsync([recipe.path + "/"])
             let bots = self.bots ?? 100
             try await ssh("cd \(folder) && printf 'LAN_IP=%s\\nBOTS=%s\\nBOT_ACCOUNTS=%s\\n' \(address) \(bots) \(Self.accounts(for: bots)) > .env")
             phase = .busy("Copying the game files the maps are read from (about 4 GB)…")
-            try await rsync(files.map(\.path), to: folder + "/storage/client-data/Data/")
+            try await rsync(files.map(\.path), into: "storage/client-data/Data/")
             try await ssh("cd \(folder) && rm -f .setup-done .setup-failed .setup-step && (nohup ./home-setup > setup.log 2>&1 < /dev/null &)")
             phase = .settingUp("Starting…")
         } catch {
@@ -318,12 +363,112 @@ final class HomeServer: ObservableObject {
                         .joined(separator: " "), stdin: stdin, quiet: quiet)
     }
 
+    // MARK: - Backups
+
+    /// The recipe's scripts, so a server set up by an older app runs this one's (the nightly
+    /// backup among them), and the backup's schedule, which `schedule` leaves alone once there.
+    private func syncScripts() async {
+        guard let recipe = Bundle.main.url(forResource: "Server", withExtension: nil)?.appendingPathComponent("CMaNGOS")
+        else { return }
+        let scripts = Self.scripts.map { recipe.appendingPathComponent($0).path }
+        guard scripts.allSatisfy(FileManager.default.fileExists(atPath:)) else { return }
+        try? await rsync(scripts)
+        _ = try? await ssh("\(folder)/home-backup schedule", quiet: true)
+    }
+
+    private func loadBackups() async {
+        guard let out = try? await ssh("\(folder)/home-backup list", quiet: true) else { return }
+        backups = Self.parseBackups(out)
+    }
+
+    /// `name bytes epoch` lines, as `home-backup list` prints them.
+    nonisolated static func parseBackups(_ out: String) -> [Backup] {
+        out.split(whereSeparator: \.isNewline).compactMap { line in
+            let f = line.split(separator: " ")
+            guard f.count == 3, let bytes = Int(f[1]), let epoch = Double(f[2]),
+                  f[0].range(of: #"^[0-9-]+(-before-restore)?\.sql\.gz$"#, options: .regularExpression) != nil
+            else { return nil }
+            return Backup(name: String(f[0]), bytes: bytes, date: Date(timeIntervalSince1970: epoch))
+        }
+    }
+
+    func backUpNow() async {
+        guard isSetUp, !isBusy else { return }
+        await run("Backing up the accounts and characters…") {
+            try await self.ssh("\(self.folder)/home-backup now")
+        }
+    }
+
+    /// The game server stops, the backup loads over the accounts and characters (a backup of the
+    /// state it replaces is taken first), and the server starts again.
+    func restore(_ backup: Backup) async {
+        guard isSetUp, !isBusy, backups.contains(backup) else { return }
+        await run("Restoring the backup of \(backup.date.formatted(date: .abbreviated, time: .shortened))…") {
+            try await self.ssh("\(self.folder)/home-backup restore \(backup.name)")
+            try await self.waitHealthy(minutes: 15)
+        }
+    }
+
+    // MARK: - Updates
+
+    /// The commits the server was built from and the newest of each, read from GitHub there.
+    func checkForUpdates() async {
+        guard isSetUp, !isBusy else { return }
+        await run("Checking for updates…") {
+            await self.syncScripts()
+            self.software = Self.parseSoftware(try await self.ssh("\(self.folder)/home-update check", quiet: true))
+        }
+    }
+
+    /// `name built newest` lines, then `mmaps`, `blocked` and `updated`, as `home-update check`
+    /// prints them.
+    nonisolated static func parseSoftware(_ out: String) -> Software? {
+        var repos: [Software.Repo] = []
+        var flags: [String: String] = [:]
+        for line in out.split(whereSeparator: \.isNewline) {
+            let f = line.split(separator: " ").map(String.init)
+            if f.count == 3 {
+                repos.append(Software.Repo(name: f[0], built: f[1], newest: f[2]))
+            } else if f.count == 2 {
+                flags[f[0]] = f[1]
+            } else if f.count == 1 {
+                flags[f[0]] = ""
+            }
+        }
+        guard !repos.isEmpty,
+              repos.allSatisfy({ $0.newest.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil })
+        else { return nil }
+        return Software(repos: repos, mmaps: flags["mmaps"] == "yes", blocked: flags["blocked"] == "yes",
+                        updated: flags["updated"].flatMap { ISO8601DateFormatter().date(from: $0) })
+    }
+
+    /// Copy this app's recipe, then start the update on the server and return; it carries on there.
+    /// It backs up first, and puts the old server back if anything fails.
+    func update() async {
+        guard isSetUp, !isBusy, software?.blocked != true else { return }
+        do {
+            guard let recipe = Bundle.main.url(forResource: "Server", withExtension: nil)?.appendingPathComponent("CMaNGOS"),
+                  FileManager.default.fileExists(atPath: recipe.path) else {
+                throw ServerError("The app is missing its server files. Reinstall it.")
+            }
+            phase = .busy("Copying the server's recipe…")
+            try await rsync([recipe.path + "/"])
+            try await ssh("cd \(folder) && rm -f .update-done .update-failed .update-step && (nohup ./home-update run > update.log 2>&1 < /dev/null &)")
+            updateFailed = nil
+            software = nil
+            phase = .updating("Starting…")
+        } catch {
+            phase = .failed(LocalServer.message(error))
+        }
+    }
+
     // MARK: - Log and removal
 
     /// The end of the setup's output and of the game server's, into a file here, shown in Finder.
     func showLog() async {
         let text = (try? await ssh("""
             cd \(folder) 2>/dev/null && { echo '== setup.log'; tail -n 200 setup.log 2>/dev/null; }
+            [ -f update.log ] && { echo '== update.log'; tail -n 200 update.log; }
             echo '== mangosd'; docker logs --tail 300 \(Self.project)-mangosd-1 2>&1
             echo '== realmd'; docker logs --tail 50 \(Self.project)-realmd-1 2>&1
             """, quiet: true)) ?? "The server could not be reached."
@@ -337,7 +482,7 @@ final class HomeServer: ObservableObject {
         guard !isBusy, !folder.isEmpty, folder.hasSuffix("/azeroth-survivors-cmangos") else { return }
         await run("Removing the server…") {
             try await self.ssh("""
-                cd \(self.folder) && { [ ! -f .setup-pid ] || kill "$(cat .setup-pid)" 2>/dev/null; ./home-compose --profile tools down -v; }
+                cd \(self.folder) && { for f in .setup-pid .update-pid; do [ ! -f $f ] || kill "$(cat $f)" 2>/dev/null; done; ./home-compose --profile tools down -v; }
                 docker rmi azeroth-survivors-cmangos:1 2>/dev/null
                 rm -rf \(self.folder)
                 """)
@@ -380,8 +525,16 @@ final class HomeServer: ObservableObject {
         try await ssh("\(folder)/home-compose \(args)")
     }
 
-    private func rsync(_ sources: [String], to dest: String) async throws {
+    /// Copies into the server's folder (`into` a path inside it), by its real path: rsync 3.5 will
+    /// not write through a symlink another user owns, as Unraid's exclusive shares are
+    /// (`/mnt/user/appdata` -> `../cache/appdata`, owned by nobody).
+    private func rsync(_ sources: [String], into sub: String = "") async throws {
+        let real = try await ssh("realpath -e \(folder)", quiet: true)
+        guard real.range(of: #"^/[A-Za-z0-9/._-]+/azeroth-survivors-cmangos$"#, options: .regularExpression) != nil else {
+            throw ServerError("The server's folder resolves to an unusual path: \(real)")
+        }
         try await Docker.run(URL(fileURLWithPath: "/usr/bin/rsync"),
-                             ["-a", "--partial", "-e", (["ssh"] + sshOptions).joined(separator: " ")] + sources + ["\(host):\(dest)"])
+                             ["-a", "--partial", "-e", (["ssh"] + sshOptions).joined(separator: " ")] + sources
+                                + ["\(host):\(real)/\(sub)"])
     }
 }

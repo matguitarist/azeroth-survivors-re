@@ -108,6 +108,7 @@ local list = AP:QuestList(panel, QUESTS_WIDTH - 30, {
   onCheck = function(key, tracked)
     AzerothPlusDB.untracked[key] = (not tracked) or nil
     if AP.UpdateObjectives then AP.UpdateObjectives() end
+    if AP.RefreshQuestMarkers then AP:RefreshQuestMarkers() end
   end,
   moreText = function() return "Scroll for more" end,
 })
