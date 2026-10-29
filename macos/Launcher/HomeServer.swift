@@ -37,8 +37,52 @@ final class HomeServer: ObservableObject {
         didSet { UserDefaults.standard.set(accounts, forKey: "homeAccounts") }
     }
     @Published private(set) var admins: Set<String> = []
+    /// The bots and the world's rates, as the server's `.env` holds them.
+    @Published private(set) var settings: Settings?
     /// The random bots the server keeps (`BOTS` in its `.env`).
-    @Published private(set) var bots: Int?
+    var bots: Int? { settings?.bots }
+
+    /// What Settings › Home Server sets on the game server, each a key of its `.env` that
+    /// `compose.yaml` passes on as a CMaNGOS or playerbots setting.
+    struct Settings: Equatable {
+        var bots = 100
+        /// Bots of a fitting level come to the zones around real players.
+        var botsNearPlayers = false
+        /// Bots stay within five levels above the highest player online.
+        var botsSyncLevel = false
+        var xp = 1.0
+        var loot = 1.0
+        var gold = 1.0
+        var reputation = 1.0
+        var rest = 1.0
+
+        static let rates: [Double] = [1, 1.5, 2, 3, 5]
+
+        init() {}
+
+        init(env: [String: String]) {
+            func rate(_ key: String) -> Double { env[key].flatMap(Double.init).map { max(0.1, min($0, 10)) } ?? 1 }
+            bots = env["BOTS"].flatMap(Int.init) ?? 100
+            botsNearPlayers = env["BOTS_NEAR_PLAYERS"] == "1"
+            botsSyncLevel = env["BOTS_SYNC_LEVEL"] == "1"
+            xp = rate("RATE_XP")
+            loot = rate("RATE_LOOT")
+            gold = rate("RATE_GOLD")
+            reputation = rate("RATE_REPUTATION")
+            rest = rate("RATE_REST")
+        }
+
+        var env: [(String, String)] {
+            func r(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(v) }
+            return [("BOTS", String(bots)), ("BOT_ACCOUNTS", String(HomeServer.accounts(for: bots))),
+                    ("BOTS_NEAR_PLAYERS", botsNearPlayers ? "1" : "0"), ("BOTS_SYNC_LEVEL", botsSyncLevel ? "1" : "0"),
+                    // Bots move on every half hour to two hours rather than two to 48, so they
+                    // find the players within a session.
+                    ("BOTS_MOVE_MIN", botsNearPlayers ? "1800" : "7200"), ("BOTS_MOVE_MAX", botsNearPlayers ? "7200" : "172800"),
+                    ("RATE_XP", r(xp)), ("RATE_LOOT", r(loot)), ("RATE_GOLD", r(gold)),
+                    ("RATE_REPUTATION", r(reputation)), ("RATE_REST", r(rest))]
+        }
+    }
     /// The server's backups of its accounts and characters, newest first (`home-backup list`).
     @Published private(set) var backups: [Backup] = []
     /// What the server runs and the newest of each, after Check for Updates (`home-update check`).
@@ -79,8 +123,9 @@ final class HomeServer: ObservableObject {
     private static let project = "azeroth-survivors-cmangos"
     private static let realmDB = "classicrealmd"
     /// The game files the map tools read, of the client's Data folder.
-    /// The recipe's scripts the launcher keeps current on the server.
-    private static let scripts = ["home-compose", "home-backup", "home-setup", "home-update"]
+    /// The recipe's scripts and compose files the launcher keeps current on the server; the
+    /// compose files take effect at the next start or Apply.
+    private static let scripts = ["home-compose", "home-backup", "home-setup", "home-update", "compose.yaml", "compose.lan.yaml"]
     private static let mpqs = ["dbc.MPQ", "terrain.MPQ", "model.MPQ", "texture.MPQ", "wmo.MPQ", "patch.MPQ", "patch-2.MPQ"]
 
     private init() {}
@@ -102,7 +147,7 @@ final class HomeServer: ObservableObject {
         UserDefaults.standard.removeObject(forKey: Prefs.homeDirKey)
         accounts = []
         admins = []
-        bots = nil
+        settings = nil
         setUpDone = false
         if !isBusy { phase = .notConfigured }
     }
@@ -162,7 +207,9 @@ final class HomeServer: ObservableObject {
             phase = .unreachable(LocalServer.message(error))
             return
         }
-        bots = status["bots"].flatMap(Int.init)
+        settings = status["env"] == "yes"
+            ? Settings(env: status.filter { $0.key.hasPrefix("env.") }.reduce(into: [:]) { $0[String($1.key.dropFirst(4))] = $1.value })
+            : nil
         setUpDone = status["state"] == "done"
         switch status["state"] {
         case "nodocker":
@@ -200,7 +247,7 @@ final class HomeServer: ObservableObject {
             if [ -f .update-pid ] && kill -0 "$(cat .update-pid)" 2>/dev/null; then echo update=running
             elif [ -f .update-failed ]; then echo update=failed; fi
             echo "updatestep=$(cat .update-step 2>/dev/null)"
-            echo "bots=$(sed -n 's/^BOTS=//p' .env 2>/dev/null)"
+            [ -f .env ] && { echo env=yes; sed -n 's/^[A-Z_][A-Z_]*=/env.&/p' .env; }
             for s in realmd mangosd; do
               echo "$s=$(docker inspect -f '{{.State.Health.Status}}' \(Self.project)-$s-1 2>/dev/null)"
             done
@@ -279,22 +326,24 @@ final class HomeServer: ObservableObject {
         }
     }
 
-    /// Keep this many random bots: the game server restarts with them (new ones are made on the way).
-    func setBots(_ count: Int) async {
-        guard isSetUp, !isBusy, (0...2000).contains(count) else { return }
-        await run("Restarting the server with \(count) bots…") {
+    /// The bots and rates into the server's `.env`; the game server restarts with them (new bots
+    /// are made on the way).
+    func apply(_ new: Settings) async {
+        guard isSetUp, !isBusy, (0...2000).contains(new.bots) else { return }
+        await run("Restarting the server with the new settings…") {
             let env = "\(self.folder)/.env"
-            try await self.ssh("""
-                sed -i -e '/^BOTS=/d' -e '/^BOT_ACCOUNTS=/d' \(env)
-                printf 'BOTS=%s\\nBOT_ACCOUNTS=%s\\n' \(count) \(Self.accounts(for: count)) >> \(env)
-                """)
+            let pairs = new.env
+            // Every value is digits and dots, every key capitals: safe in the shell as they are.
+            let delete = pairs.map { "-e '/^\($0.0)=/d'" }.joined(separator: " ")
+            let lines = pairs.map { "\($0.0)=\($0.1)" }.joined(separator: "\\n")
+            try await self.ssh("sed -i \(delete) \(env) && printf '\(lines)\\n' >> \(env)")
             try await self.compose("up -d database realmd mangosd")
             try await self.waitHealthy(minutes: 30)
         }
     }
 
     /// Each bot account holds nine characters, with room to spare.
-    private static func accounts(for bots: Int) -> Int { max(20, bots / 9 + 10) }
+    nonisolated fileprivate static func accounts(for bots: Int) -> Int { max(20, bots / 9 + 10) }
 
     /// A step that ends on a fresh look at the server, or on why it failed.
     private func run(_ what: String, _ body: @escaping () async throws -> Void) async {

@@ -8,8 +8,9 @@ services:
     restart: unless-stopped
     # The bots and the auction bot commit without pause, and a home server's disk (Unraid's array)
     # syncs slowly: a sync per commit backs the queue up until logins time out. Once a second
-    # instead; a power cut costs at most that second.
-    command: ['--innodb-flush-log-at-trx-commit=2']
+    # instead; a power cut costs at most that second. The cache holds every table (about 500 MB),
+    # with room for the characters and bots to grow.
+    command: ['--innodb-flush-log-at-trx-commit=2', '--innodb-buffer-pool-size=1G']
   realmd:
     restart: unless-stopped
     ports: !override

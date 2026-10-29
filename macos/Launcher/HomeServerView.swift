@@ -166,7 +166,7 @@ struct HomeServerSettings: View {
     @State private var confirmRemove = false
     @State private var restoring: HomeServer.Backup?
     @State private var confirmUpdate = false
-    @State private var bots = 100
+    @State private var draft = HomeServer.Settings()
 
     var body: some View {
         Form {
@@ -194,16 +194,42 @@ struct HomeServerSettings: View {
 
             if home.isSetUp {
                 Section("Bots") {
-                    HStack {
-                        Stepper("\(bots) random bots", value: $bots, in: 0...1000, step: 50)
-                        Spacer()
-                        Button("Apply") { Task { await home.setBots(bots) } }
-                            .disabled(home.isBusy || game.running || bots == home.bots)
-                    }
-                    Text("They level, quest and trade across the world. Applying restarts the game server: everyone is signed out for a minute, longer while new bots are made. Each 100 bots take about 1 GB of memory.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Stepper("\(draft.bots) random bots", value: $draft.bots, in: 0...1000, step: 50)
+                    Text("They level, quest and trade across the world, at every level from 1 to 60. Each 100 bots take about 1 GB of memory.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Bring bots to where players are", isOn: $draft.botsNearPlayers)
+                    Text("Bots of a fitting level come to the zones around anyone playing, rather than roaming where nobody is.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Keep bots near the players' level", isOn: $draft.botsSyncLevel)
+                    Text("No bot is more than five levels above the highest player online. Bots above that are made again at a lower level, losing their progress.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
+                .disabled(home.isBusy || game.running || home.settings == nil)
+
+                Section {
+                    rate("Experience", $draft.xp)
+                    rate("Loot", $draft.loot)
+                    rate("Gold", $draft.gold)
+                    rate("Reputation", $draft.reputation)
+                    rate("Rested experience", $draft.rest)
+                    HStack {
+                        Text("Applying restarts the game server: everyone is signed out for a minute, longer while new bots are made.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        if draft != home.settings {
+                            Button("Revert") { if let now = home.settings { draft = now } }
+                        }
+                        Button("Apply") { Task { await home.apply(draft) } }
+                            .disabled(draft == home.settings)
+                    }
+                } header: {
+                    Text("Rates")
+                } footer: {
+                    Text("×1 is the original game. Loot raises the chance of every item drop; quest items are left alone.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .disabled(home.isBusy || game.running || home.settings == nil)
 
                 Section("Accounts") {
                     ForEach(home.accounts, id: \.self) { name in
@@ -286,7 +312,7 @@ struct HomeServerSettings: View {
         .fixedSize(horizontal: false, vertical: true)
         .task { await home.refresh() }
         .homeServerPolling()
-        .onChange(of: home.bots) { _, now in if let now { bots = now } }
+        .onChange(of: home.settings, initial: true) { _, now in if let now { draft = now } }
         .sheet(isPresented: $newAccount) {
             sheet { AccountForm(title: "New account", action: "Create", home: true) { newAccount = false } }
         }
@@ -315,6 +341,15 @@ struct HomeServerSettings: View {
     /// Unraid's backups share, where `home-backup` keeps them there.
     private var onUnraid: Bool {
         UserDefaults.standard.string(forKey: Prefs.homeDirKey)?.hasPrefix("/mnt/user/") == true
+    }
+
+    private func rate(_ title: String, _ value: Binding<Double>) -> some View {
+        Picker(title, selection: value) {
+            // A value set by hand on the server stays selectable.
+            ForEach(Array(Set(HomeServer.Settings.rates + [value.wrappedValue])).sorted(), id: \.self) { r in
+                Text("×\(r.formatted(.number.precision(.fractionLength(0...1))))").tag(r)
+            }
+        }
     }
 
     private var softwareNote: String {

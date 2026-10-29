@@ -71,6 +71,28 @@ services:
       - PlayerBots_AiPlayerbot_MinRandomBots=${BOTS:-100}
       - PlayerBots_AiPlayerbot_MaxRandomBots=${BOTS:-100}
       - PlayerBots_AiPlayerbot_RandomBotAccountCount=${BOT_ACCOUNTS:-20} # Nine characters each.
+      # Bots of a fitting level come to the zones around real players.
+      - PlayerBots_AiPlayerbot_RandomBotTeleportNearPlayer=${BOTS_NEAR_PLAYERS:-0}
+      # How often a bot moves on, in seconds: shorter with the above, so they find players sooner.
+      - PlayerBots_AiPlayerbot_RandomBotTeleportTeleportMinInterval=${BOTS_MOVE_MIN:-7200}
+      - PlayerBots_AiPlayerbot_RandomBotTeleportTeleportMaxInterval=${BOTS_MOVE_MAX:-172800}
+      # Bots stay within five levels above the highest player online; those outside are rerolled.
+      - PlayerBots_AiPlayerbot_SyncLevelWithPlayers=${BOTS_SYNC_LEVEL:-0}
+      # The world's rates, 1 as on the original realms (Settings › Home Server › Rates).
+      - Mangosd_Rate_XP_Kill=${RATE_XP:-1}
+      - Mangosd_Rate_XP_Quest=${RATE_XP:-1}
+      - Mangosd_Rate_XP_Explore=${RATE_XP:-1}
+      - Mangosd_Rate_Drop_Item_Poor=${RATE_LOOT:-1}
+      - Mangosd_Rate_Drop_Item_Normal=${RATE_LOOT:-1}
+      - Mangosd_Rate_Drop_Item_Uncommon=${RATE_LOOT:-1}
+      - Mangosd_Rate_Drop_Item_Rare=${RATE_LOOT:-1}
+      - Mangosd_Rate_Drop_Item_Epic=${RATE_LOOT:-1}
+      - Mangosd_Rate_Drop_Item_Referenced=${RATE_LOOT:-1}
+      - Mangosd_Rate_Drop_Money=${RATE_GOLD:-1}
+      - Mangosd_Rate_Reputation_Gain=${RATE_REPUTATION:-1}
+      - Mangosd_Rate_Rest_InGame=${RATE_REST:-1}
+      - Mangosd_Rate_Rest_Offline_InTavernOrCity=${RATE_REST:-1}
+      - Mangosd_Rate_Rest_Offline_InWilderness=${RATE_REST:-1}
 
   # Setup only: every database from scratch.
   install:

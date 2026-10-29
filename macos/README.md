@@ -71,8 +71,12 @@ The launcher:
   goes through `home-compose` (the server's `docker compose`, or the `docker:29-cli` image's where
   there is none, as on Unraid) with `compose.lan.yaml` on top: ports on the LAN address, restarts
   with the machine, kept running when the game quits. Accounts are the same `--account-sql` and
-  SQL, fed to `docker exec` of its database; the bot count rewrites `.env` and recreates
-  `mangosd`. Nothing is forwarded to the internet. `home-backup` dumps the accounts and characters
+  SQL, fed to `docker exec` of its database. Settings › Home Server › Bots and Rates rewrite
+  `.env` keys (`BOTS`, `BOTS_NEAR_PLAYERS`, `BOTS_SYNC_LEVEL`, `RATE_XP`, `RATE_LOOT`, `RATE_GOLD`,
+  `RATE_REPUTATION`, `RATE_REST`) that `compose.yaml` passes on as CMaNGOS (`Mangosd_`) and
+  playerbots (`PlayerBots_`) settings, then recreate `mangosd`; bringing bots to players also
+  shortens how often they move on (`BOTS_MOVE_MIN`, `BOTS_MOVE_MAX`). The launcher keeps the
+  server's scripts and compose files current on each look. Nothing is forwarded to the internet. `home-backup` dumps the accounts and characters
   nightly at 4:30 (a dynamix cron file on Unraid, else root's crontab; to
   `/mnt/user/backups/azeroth-survivors-cmangos`, else `backups/`, 14 kept), and Settings › Home Server backs up and restores on demand, a restore saving the state
   it replaces first. `home-update check` compares the commits the image was built from (`.refs`,
