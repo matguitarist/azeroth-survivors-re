@@ -46,6 +46,10 @@ enum Prefs {
     static let remoteServerKey = "remoteServer"
     static let keepServerKey = "keepServerRunning"
     static let installAddonsKey = "installAddons"
+    static let serverKindKey = "localServerKind"
+    static let homeHostKey = "homeServerHost"
+    static let homeKeyKey = "homeServerKey"
+    static let homeDirKey = "homeServerFolder"
 
     static let defaultDataURL = "https://archive.org/download/WoW_1.12.1-5875/1.12.1-5875_enUS.zip"
 
@@ -72,18 +76,37 @@ enum GameMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// Where Classic plays: the launcher's own server on this Mac, or one at an address.
+/// Where Classic plays: the launcher's own server on this Mac, the one it manages on a home
+/// server, or one at an address.
 enum ClassicServer: String, CaseIterable, Identifiable {
-    case local, remote
+    case local, home, remote
     var id: String { rawValue }
     var label: String {
         switch self {
         case .local: "On this Mac"
+        case .home: "Home server"
         case .remote: "Another server"
         }
     }
     static var current: ClassicServer {
         ClassicServer(rawValue: UserDefaults.standard.string(forKey: Prefs.classicServerKey) ?? "") ?? .local
+    }
+}
+
+/// Which server runs on this Mac: vmangos from prebuilt images, or CMaNGOS with random playerbots,
+/// built here. Each keeps its own folder, databases and accounts; they share the ports, so one runs
+/// at a time.
+enum ServerKind: String, CaseIterable, Identifiable {
+    case vmangos, cmangos
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .vmangos: "vmangos"
+        case .cmangos: "CMaNGOS with bots"
+        }
+    }
+    static var current: ServerKind {
+        ServerKind(rawValue: UserDefaults.standard.string(forKey: Prefs.serverKindKey) ?? "") ?? .vmangos
     }
 }
 

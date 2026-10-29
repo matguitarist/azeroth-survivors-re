@@ -9,6 +9,7 @@ struct LauncherApp: App {
     @StateObject private var config = GameConfig()
     @StateObject private var updater = Updater()
     @ObservedObject private var server = LocalServer.shared
+    @ObservedObject private var home = HomeServer.shared
 
     var body: some Scene {
         Window(Paths.appName, id: "launcher") {
@@ -18,6 +19,7 @@ struct LauncherApp: App {
                 .environmentObject(config)
                 .environmentObject(updater)
                 .environmentObject(server)
+                .environmentObject(home)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
@@ -30,7 +32,7 @@ struct LauncherApp: App {
             CommandMenu("Game") {
                 Button("Play") { play() }
                     .keyboardShortcut("p")
-                    .disabled(data.state != .ready || game.running || !Launcher.canPlay(server: server))
+                    .disabled(data.state != .ready || game.running || !Launcher.canPlay(server: server, home: home))
                 Divider()
                 Button("Verify Game Files") { data.verify() }
                     .disabled(data.isBusy || game.running)
@@ -46,6 +48,7 @@ struct LauncherApp: App {
                 .environmentObject(config)
                 .environmentObject(updater)
                 .environmentObject(server)
+                .environmentObject(home)
         }
     }
 
@@ -75,8 +78,8 @@ enum Launcher {
     /// Reopens the launcher's window should SwiftUI have released it (set by `LauncherView`).
     static var openLauncher: (() -> Void)?
 
-    /// Play, as the launcher is set: Survivors; Classic at an address; or Classic on this Mac,
-    /// starting its server first when it is not up yet.
+    /// Play, as the launcher is set: Survivors; Classic at an address; or Classic on this Mac or
+    /// the home server, starting it first when it is not up yet.
     static func play(game: GameProcess, config: GameConfig) {
         guard !game.running else { game.activate(); return }
         guard GameMode.current == .classic else { start(game); return }
@@ -87,6 +90,15 @@ enum Launcher {
                 .trimmingCharacters(in: .whitespaces)
             config.set(Realm.cvar, address.isEmpty ? Realm.fallback : address, default: Realm.fallback)
             start(game)
+        case .home:
+            let home = HomeServer.shared
+            Task { @MainActor in
+                await home.refresh()
+                if home.phase == .stopped { await home.start() }
+                guard home.phase == .running, !game.running else { return }
+                config.set(Realm.cvar, home.address, default: Realm.fallback)
+                start(game)
+            }
         case .local:
             let server = LocalServer.shared
             Task { @MainActor in
@@ -98,10 +110,14 @@ enum Launcher {
         }
     }
 
-    /// Classic on this Mac plays once its server is set up and holds an account.
-    static func canPlay(server: LocalServer) -> Bool {
-        guard GameMode.current == .classic, ClassicServer.current == .local else { return true }
-        return server.isSetUp && !server.isBusy && !server.accounts.isEmpty
+    /// Classic on this Mac or the home server plays once that server is set up and holds an account.
+    static func canPlay(server: LocalServer, home: HomeServer) -> Bool {
+        guard GameMode.current == .classic else { return true }
+        switch ClassicServer.current {
+        case .remote: return true
+        case .home: return home.canPlay
+        case .local: return server.isSetUp && !server.isBusy && !server.accounts.isEmpty
+        }
     }
 
     private static func start(_ game: GameProcess) {

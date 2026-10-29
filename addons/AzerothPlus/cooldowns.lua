@@ -6,11 +6,13 @@ local AP = AzerothPlus
 local SIZE, GAP, PER_ROW = 34, 4, 10
 local GCD = 1.6 -- a cooldown this short is the global cooldown, not the spell's own
 local MAX_BUFF = 600 -- buffs longer than this (10 min) are long-term ones, not worth a slot
+local MAX_COOLDOWN = 7 * 86400 -- no 1.12 cooldown is longer; anything past it is bad data
 
 local frame = CreateFrame("Frame", "AzerothPlusCooldowns", UIParent)
 frame:SetWidth(PER_ROW * (SIZE + GAP) - GAP)
 frame:SetHeight(SIZE * 2 + GAP + 12)
-AP:Movable(frame, "cooldowns", "Cooldowns", "CENTER", 0, -190)
+-- Below the centered unit frames (`frames.lua`), clear of them and of the action bars.
+AP:Movable(frame, "cooldowns", "Cooldowns", "CENTER", 0, -255)
 
 local function newIcon(parent)
   local b = CreateFrame("Frame", nil, parent)
@@ -42,11 +44,13 @@ local function icon(row, i)
   return b
 end
 
--- What is cooling down, longest-known first: {texture, ends, duration}, one per texture.
+-- What is cooling down, longest-known first: {texture, ends, duration}, one per texture. A held
+-- cooldown (enable 0: it starts only when, say, the buff it belongs to ends) has no time to show.
 local function cooldowns()
   local list, seen, now = {}, {}, GetTime()
-  local function add(texture, start, duration)
-    if texture and start and start > 0 and duration and duration > GCD and not seen[texture] then
+  local function add(texture, start, duration, enable)
+    if texture and start and start > 0 and duration and duration > GCD and duration <= MAX_COOLDOWN
+      and enable ~= 0 and not seen[texture] then
       seen[texture] = true
       table.insert(list, { texture = texture, ends = start + duration })
     end
@@ -54,19 +58,19 @@ local function cooldowns()
   for tab = 1, GetNumSpellTabs() do
     local _, _, offset, count = GetSpellTabInfo(tab)
     for i = offset + 1, offset + count do
-      local start, duration = GetSpellCooldown(i, BOOKTYPE_SPELL)
-      add(GetSpellTexture(i, BOOKTYPE_SPELL), start, duration)
+      local start, duration, enable = GetSpellCooldown(i, BOOKTYPE_SPELL)
+      add(GetSpellTexture(i, BOOKTYPE_SPELL), start, duration, enable)
     end
   end
   for _, slot in ipairs({ 13, 14 }) do
-    local start, duration = GetInventoryItemCooldown("player", slot)
-    add(GetInventoryItemTexture("player", slot), start, duration)
+    local start, duration, enable = GetInventoryItemCooldown("player", slot)
+    add(GetInventoryItemTexture("player", slot), start, duration, enable)
   end
   for bag = 0, 4 do
     for slot = 1, GetContainerNumSlots(bag) do
-      local start, duration = GetContainerItemCooldown(bag, slot)
+      local start, duration, enable = GetContainerItemCooldown(bag, slot)
       if start and start > 0 then
-        add(GetContainerItemInfo(bag, slot), start, duration)
+        add(GetContainerItemInfo(bag, slot), start, duration, enable)
       end
     end
   end

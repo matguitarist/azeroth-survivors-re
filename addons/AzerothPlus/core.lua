@@ -15,6 +15,13 @@ local DEFAULTS = {
   resource = true,
   combo = true,
   resourceInCombatOnly = true,
+  centerFrames = false,
+  minimap = false,
+  objectives = false,
+  objectivesFolded = false,
+  map = false,
+  untracked = {},
+  mapFolded = {},
   positions = {},
 }
 

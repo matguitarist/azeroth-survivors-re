@@ -1,0 +1,15 @@
+#!/bin/bash
+# Build every database from scratch (setup only: it drops what is there), then publish the realm
+# at REALM_ADDRESS: this Mac, or a home server's LAN address (`compose.lan.yaml`).
+set -euo pipefail
+address=${REALM_ADDRESS:-127.0.0.1}
+[[ $address =~ ^[0-9A-Za-z.-]+$ ]] || { echo "bad REALM_ADDRESS: $address"; exit 1; }
+cd /opt/cmangos/classic-db
+TERM=dumb ./InstallFullDB.sh -InstallAll root "$MARIADB_ROOT_PASSWORD" DeleteAll
+# The base SQL seeds ADMINISTRATOR, GAMEMASTER, MODERATOR and PLAYER, each with its name for a
+# password; the launcher makes its own accounts.
+mariadb -hdatabase -umangos -pmangos classicrealmd \
+    -e "DELETE FROM account WHERE username IN ('ADMINISTRATOR', 'GAMEMASTER', 'MODERATOR', 'PLAYER');
+        UPDATE realmlist SET name = 'Azeroth (bots)', address = '$address', port = 8085, icon = 0, realmflags = 0;"
+mariadb -hdatabase -umangos -pmangos -N classicmangos -e "SELECT COUNT(*) FROM creature_template;" \
+    | awk '$1 < 1000 { print "the world database is empty"; exit 1 }'

@@ -10,10 +10,14 @@ local ROWS = {
   { "resource", "Personal resource display" },
   { "resourceInCombatOnly", "    Only in combat" },
   { "combo", "    Combo points" },
+  { "centerFrames", "Player and target frames: smaller, centered" },
+  { "minimap", "Minimap: coordinates, buffs moved off it" },
+  { "objectives", "All objectives: every quest, every objective" },
+  { "map", "Map & quest log: a smaller map with its quests" },
 }
 
 local panel = CreateFrame("Frame", "AzerothPlusOptions", UIParent)
-panel:SetWidth(340)
+panel:SetWidth(400)
 panel:SetHeight(84 + table.getn(ROWS) * 26)
 panel:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
 panel:SetFrameStrata("DIALOG")

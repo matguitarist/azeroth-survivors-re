@@ -1,0 +1,23 @@
+# The same server on an always-on machine in the home (an Unraid box, say), for every Mac on the
+# network: `docker compose -f compose.yaml -f compose.lan.yaml`, with LAN_IP in `.env`. The ports
+# bind to that one address, the realm is published there, and the server comes back after a reboot.
+# Keep it on the LAN: forward nothing to it from the internet.
+
+services:
+  database:
+    restart: unless-stopped
+    # The bots and the auction bot commit without pause, and a home server's disk (Unraid's array)
+    # syncs slowly: a sync per commit backs the queue up until logins time out. Once a second
+    # instead; a power cut costs at most that second.
+    command: ['--innodb-flush-log-at-trx-commit=2']
+  realmd:
+    restart: unless-stopped
+    ports: !override
+      - ${LAN_IP:?set LAN_IP in .env}:3724:3724
+  mangosd:
+    restart: unless-stopped
+    ports: !override
+      - ${LAN_IP:?set LAN_IP in .env}:8085:8085
+  install:
+    environment:
+      - REALM_ADDRESS=${LAN_IP:?set LAN_IP in .env}

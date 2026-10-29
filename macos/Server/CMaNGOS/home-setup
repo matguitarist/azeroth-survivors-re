@@ -1,0 +1,21 @@
+#!/bin/bash
+# The whole setup on a home server, detached from the launcher that copied this folder and the game
+# files here (an hour or two on a small CPU). `.setup-step` holds the step in progress, then
+# `.setup-done` or `.setup-failed`; the output goes to `setup.log`.
+set -euo pipefail
+cd "$(dirname "$0")"
+echo $$ > .setup-pid
+rm -f .setup-done .setup-failed
+trap '[ -f .setup-done ] || touch .setup-failed; rm -f .setup-pid' EXIT
+dc() { ./home-compose "$@"; }
+step() { echo "$1" > .setup-step; echo "== $(date '+%F %T') $1"; shift; "$@"; }
+# Unraid's shares belong to nobody:users; the copy came with the Mac's owner.
+if [ -d /mnt/user/appdata ]; then chown -R nobody:users .; fi
+step "Downloading the database and the map reader…" dc --profile tools pull database extract-maps
+step "Building the server from source…" dc build realmd
+step "Reading the maps from the game files…" dc --profile tools run --rm -T extract-maps
+step "Building the movement maps the bots walk on…" dc --profile tools run --rm -T build-mmaps
+step "Building the world database…" dc --profile tools run --rm -T install
+step "Creating the bots…" dc up -d database realmd mangosd
+touch .setup-done
+echo "== $(date '+%F %T') done"

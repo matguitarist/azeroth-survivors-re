@@ -7,6 +7,7 @@ struct LauncherView: View {
     @EnvironmentObject private var game: GameProcess
     @EnvironmentObject private var config: GameConfig
     @EnvironmentObject private var server: LocalServer
+    @EnvironmentObject private var home: HomeServer
     @Environment(\.openWindow) private var openWindow
     @AppStorage(Prefs.skipLauncherKey) private var skipLauncher = false
     @AppStorage(Prefs.modeKey) private var mode: GameMode = .survivors
@@ -111,7 +112,7 @@ struct LauncherView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Color(red: 0.75, green: 0.45, blue: 0.1))
                     .keyboardShortcut(.defaultAction)
-                    .disabled(game.running || !Launcher.canPlay(server: server))
+                    .disabled(game.running || !Launcher.canPlay(server: server, home: home))
                     SettingsLink()
                 }
             }
@@ -169,7 +170,7 @@ struct LauncherView: View {
         }
     }
 
-    /// Classic: the server on this Mac, or one at an address.
+    /// Classic: the server on this Mac, the home server, or one at an address.
     @ViewBuilder private var classic: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker("Server", selection: $classicServer) {
@@ -181,6 +182,7 @@ struct LauncherView: View {
             .disabled(game.running)
             switch classicServer {
             case .local: LocalServerPanel()
+            case .home: HomeServerPanel()
             case .remote: remote
             }
         }
@@ -201,9 +203,11 @@ struct LauncherView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// Start the local server ahead of Play: it takes about a minute.
+    /// Start the local server ahead of Play: it takes about a minute. The home server is only
+    /// looked at.
     private func prewarm() {
         Task {
+            if mode == .classic, classicServer == .home { await home.refresh(); return }
             await server.refresh()
             guard mode == .classic, classicServer == .local, !game.running, server.phase == .stopped else { return }
             await server.start()
@@ -211,13 +215,15 @@ struct LauncherView: View {
     }
 
     /// After a game: the address the login screen may have changed comes back to the launcher,
-    /// and the local server stops unless Settings keeps it.
+    /// and the local server stops unless Settings keeps it. The home server keeps running.
     private func gameQuit() {
         guard mode == .classic else { return }
         switch classicServer {
         case .remote:
             let now = config.value(Realm.cvar, default: Realm.fallback)
-            if now != Realm.fallback, now != LocalServer.address { remoteServer = now }
+            if now != Realm.fallback, now != LocalServer.address, now != home.address { remoteServer = now }
+        case .home:
+            break
         case .local:
             if !keepServer { Task { await server.stop() } }
         }
@@ -229,7 +235,7 @@ struct LauncherView: View {
         data.quickCheck()
         if remoteServer.isEmpty {
             let saved = config.value(Realm.cvar, default: Realm.fallback)
-            if saved != Realm.fallback, saved != LocalServer.address { remoteServer = saved }
+            if saved != Realm.fallback, saved != LocalServer.address, saved != home.address { remoteServer = saved }
         }
         prewarm()
         // "Start the game directly", unless ⌥ is held to reach the launcher.

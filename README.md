@@ -22,7 +22,8 @@ enemies swarm in waves, you level up and pick upgrades, and a boss shows up ever
 minutes. **No server, no login, no account** — fully offline and self-contained.
 
 The launcher also plays **Classic**, the original 1.12.1 game, on a server you run on your Mac (the
-launcher sets one up in Docker) or one at an address.
+launcher sets one up in Docker: vmangos, or CMaNGOS with a hundred bots playing the world), on the
+same CMaNGOS set up and managed over SSH on a home server, or on one at an address.
 
 <table>
   <tr>

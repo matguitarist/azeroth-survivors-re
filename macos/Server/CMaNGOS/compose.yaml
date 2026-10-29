@@ -1,0 +1,128 @@
+# The launcher's second local 1.12.1 server: CMaNGOS Classic with random playerbots, its image
+# built on this Mac from `Dockerfile`. The launcher copies this folder into
+# ~/Library/Application Support/Azeroth Survivors/Server-CMaNGOS and runs `docker compose` there,
+# with CLIENT_DATA set to the game's Data folder. It takes the same ports as the vmangos server, so
+# the launcher runs one at a time. Ports bind to this Mac only.
+
+name: azeroth-survivors-cmangos
+
+x-server: &server
+  image: azeroth-survivors-cmangos:1
+  restart: 'no'
+  depends_on:
+    database:
+      condition: service_healthy
+
+services:
+  database:
+    image: mariadb:11.4
+    restart: 'no'
+    stop_grace_period: 2m
+    healthcheck:
+      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']
+      interval: 1m
+      timeout: 3s
+      retries: 5
+      start_period: 10m
+      start_interval: 2s
+    volumes:
+      - cmangos-database:/var/lib/mysql
+    environment:
+      - TZ=Etc/UTC
+      - MARIADB_ROOT_PASSWORD=password # Not published: the database is reachable from the containers only.
+
+  realmd:
+    <<: *server
+    build: .
+    command: ['/opt/cmangos/bin/realmd']
+    healthcheck:
+      test: ['CMD', 'bash', '-c', '</dev/tcp/localhost/3724']
+      interval: 1m
+      timeout: 3s
+      retries: 5
+      start_period: 5m
+      start_interval: 2s
+    ports:
+      - 127.0.0.1:3724:3724
+    volumes:
+      - ./storage/realmd/logs:/logs
+    environment:
+      - TZ=Etc/UTC
+
+  mangosd:
+    <<: *server
+    command: ['/opt/cmangos/bin/mangosd']
+    stop_grace_period: 2m # Gives the server time to save characters.
+    healthcheck:
+      test: ['CMD', 'bash', '-c', '</dev/tcp/localhost/8085']
+      interval: 1m
+      timeout: 3s
+      retries: 5
+      start_period: 15m # The first start creates the bots' characters.
+      start_interval: 2s
+    ports:
+      - 127.0.0.1:8085:8085
+    volumes:
+      - ./storage/data:/data:ro
+      - ./storage/mangosd/logs:/logs
+    # Any config key can be set as <prefix><key, dots as underscores> (`Config.cpp`).
+    environment:
+      - TZ=Etc/UTC
+      - PlayerBots_AiPlayerbot_MinRandomBots=${BOTS:-100}
+      - PlayerBots_AiPlayerbot_MaxRandomBots=${BOTS:-100}
+      - PlayerBots_AiPlayerbot_RandomBotAccountCount=${BOT_ACCOUNTS:-20} # Nine characters each.
+
+  # Setup only: every database from scratch.
+  install:
+    <<: *server
+    profiles: ['tools']
+    command: ['cmangos-install']
+    environment:
+      - MARIADB_ROOT_PASSWORD=password
+      - REALM_ADDRESS=${REALM_ADDRESS:-127.0.0.1}
+
+  # Terrain, DBC files and line-of-sight models, in about a minute. CMaNGOS's own map extractor
+  # crashes on arm64 (CMake turns its extractors off on ARM), so vmangos's run instead: the same
+  # `z1.4` maps and `VMAP_7.0` models, from the image the vmangos server already uses.
+  extract-maps:
+    image: ghcr.io/mserajnik/vmangos-server:5875
+    profiles: ['tools']
+    working_dir: /work
+    entrypoint:
+      - /bin/sh
+      - -euc
+      - |
+        x=/opt/vmangos/bin/Extractors
+        rm -rf ./Buildings ./Cameras ./dbc ./maps ./vmaps
+        $$x/MapExtractor --silent
+        $$x/VMapExtractor < /dev/null
+        mkdir vmaps
+        $$x/VMapAssembler Buildings vmaps < /dev/null
+        rm -rf /data/dbc /data/maps /data/vmaps ./Buildings ./Cameras
+        mv ./dbc ./maps ./vmaps /data/
+        ls /data/maps | grep -q '\.map$$'
+        ls /data/vmaps | grep -q '\.vmtree$$'
+    volumes:
+      - ./storage/client-data:/work
+      - ${CLIENT_DATA:-./storage/client-data/Data}:/work/Data:ro
+      - ./storage/data:/data
+
+  # Movement maps, from the maps and models above: the bots path on them (they cannot run
+  # without), as CMaNGOS's own format (`MMAP_VERSION` 8; vmangos writes 6). Every core, once.
+  build-mmaps:
+    image: azeroth-survivors-cmangos:1
+    profiles: ['tools']
+    working_dir: /data
+    entrypoint:
+      - /bin/bash
+      - -euc
+      - |
+        t=/opt/cmangos/bin/tools
+        rm -rf mmaps && mkdir mmaps
+        $$t/MoveMapGen --silent --threads "$$(nproc)" --workdir /data --offMeshInput $$t/offmesh.txt
+        ls mmaps | grep -q '\.mmtile$$'
+    volumes:
+      - ./storage/data:/data
+
+volumes:
+  cmangos-database:

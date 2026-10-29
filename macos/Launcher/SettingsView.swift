@@ -8,6 +8,7 @@ struct SettingsView: View {
             GraphicsSettings().tabItem { Label("Graphics", systemImage: "display") }
             SoundSettings().tabItem { Label("Sound", systemImage: "speaker.wave.2") }
             ServerSettings().tabItem { Label("Server", systemImage: "server.rack") }
+            HomeServerSettings().tabItem { Label("Home Server", systemImage: "house") }
             AdvancedSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
         }
         .frame(width: 520)
@@ -52,7 +53,7 @@ private struct GeneralSettings: View {
             Section("Classic Addons") {
                 Toggle(isOn: $installAddons) {
                     Text("Install AzerothPlus and AzerothAdmin")
-                    Text("AzerothPlus: a cooldown manager, a damage meter, a swing timer and a personal resource display (/ap). AzerothAdmin: game master tools for an administrator on your own server (/aa).")
+                    Text("AzerothPlus: a cooldown manager, a damage meter, a swing timer, a personal resource display, centered unit frames, an objectives tracker, a windowed map with its quests and minimap coordinates (/ap or its minimap button). AzerothAdmin: game master tools for an administrator on your own server (/aa).")
                 }
                 Button("Show AddOns Folder") { reveal(Addons.folder) }
             }

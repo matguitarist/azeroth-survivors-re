@@ -1,0 +1,10 @@
+#!/bin/bash
+# `docker compose` for this folder on a home server (`compose.lan.yaml` on top): the server's own,
+# or the docker:cli image's where it has none (Unraid). The launcher runs everything through it.
+set -euo pipefail
+cd "$(dirname "$0")"
+f=(-p azeroth-survivors-cmangos -f compose.yaml -f compose.lan.yaml)
+if docker compose version >/dev/null 2>&1; then exec docker compose "${f[@]}" "$@"; fi
+d=$PWD
+exec docker run --rm -i -v /var/run/docker.sock:/var/run/docker.sock -v "$d:$d" -w "$d" docker:29-cli \
+    docker compose "${f[@]}" "$@"

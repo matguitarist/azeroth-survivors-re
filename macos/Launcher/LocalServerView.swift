@@ -9,12 +9,13 @@ struct LocalServerPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            ServerKindPicker()
             switch server.phase {
             case .checking:
                 busy("Checking the server…")
 
             case .noDocker:
-                note("Playing on this Mac runs a WoW 1.12.1 server (vmangos) in Docker. Install OrbStack or Docker Desktop, then check again.")
+                note("Playing on this Mac runs a WoW 1.12.1 server in Docker. Install OrbStack or Docker Desktop, then check again.")
                 HStack(spacing: 10) {
                     Link("Get OrbStack", destination: URL(string: "https://orbstack.dev")!)
                     Link("Get Docker Desktop", destination: URL(string: "https://www.docker.com/products/docker-desktop/")!)
@@ -22,7 +23,12 @@ struct LocalServerPanel: View {
                 }
 
             case .notSetUp:
-                note("Sets up a WoW 1.12.1 server (vmangos) on this Mac, in \(Docker.engineName): about 1 GB to download and a few minutes, once. Your characters stay on this Mac.")
+                switch server.kind {
+                case .vmangos:
+                    note("Sets up a WoW 1.12.1 server (vmangos) on this Mac, in \(Docker.engineName): about 1 GB to download and a few minutes, once. Your characters stay on this Mac.")
+                case .cmangos:
+                    note("Sets up CMaNGOS on this Mac, in \(Docker.engineName), with 100 bots that level, quest and group across the world. It is built from source, with the maps its bots walk on: about 25 minutes and 8 GB of space, once. Your characters stay on this Mac.")
+                }
                 Button("Set Up Server") { Task { await server.setUp() } }
                     .buttonStyle(.borderedProminent)
 
@@ -81,12 +87,30 @@ struct LocalServerPanel: View {
     }
 }
 
-/// An account name and a password for the local server: a new account, or a new password.
+/// Which server runs on this Mac. Each has its own characters; switching leaves the other set up.
+struct ServerKindPicker: View {
+    @EnvironmentObject private var server: LocalServer
+    @EnvironmentObject private var game: GameProcess
+
+    var body: some View {
+        Picker("Server", selection: Binding(get: { server.kind }, set: { kind in Task { await server.select(kind) } })) {
+            ForEach(ServerKind.allCases) { Text($0.label).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .fixedSize()
+        .disabled(server.isBusy || game.running)
+    }
+}
+
+/// An account name and a password for the local or the home server: a new account, or a new
+/// password.
 struct AccountForm: View {
     @EnvironmentObject private var server: LocalServer
+    @EnvironmentObject private var homeServer: HomeServer
     let title: String
     let action: String
     var name: String? = nil
+    var home = false
     var done: (() -> Void)? = nil
 
     @State private var typed = ""
@@ -132,7 +156,9 @@ struct AccountForm: View {
         guard !account.isEmpty, !password.isEmpty, !working else { return }
         working = true
         Task {
-            error = await server.account(account, password: password, changePassword: name != nil, admin: admin)
+            error = home
+                ? await homeServer.account(account, password: password, changePassword: name != nil, admin: admin)
+                : await server.account(account, password: password, changePassword: name != nil, admin: admin)
             working = false
             if error == nil {
                 password = ""
@@ -156,6 +182,7 @@ struct ServerSettings: View {
     var body: some View {
         Form {
             Section("Server on this Mac") {
+                LabeledContent("Server") { ServerKindPicker() }
                 LabeledContent("Status") { Text(statusText) }
                 if server.isSetUp {
                     HStack {
@@ -196,29 +223,31 @@ struct ServerSettings: View {
                     if server.phase != .running {
                         Text("Start the server to manage accounts.").font(.caption).foregroundStyle(.secondary)
                     } else {
-                        Text("An administrator uses AzerothAdmin (/aa in the game) for levels, gold, cheats, teleports, items and party bots. A change takes effect at the account's next login.")
+                        Text("An administrator uses AzerothAdmin (/aa in the game) for levels, gold, cheats, teleports, items and bots. A change takes effect at the account's next login.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
-                Section("World Data") {
-                    LabeledContent("Maps") {
-                        Text(server.fullMaps ? "Full: line of sight and pathing" : "Quick: no line of sight or pathing")
-                    }
-                    if let since = server.extractingSince {
-                        HStack {
-                            ProgressView().controlSize(.small)
-                            Text("Extracting, started \(since.formatted(.relative(presentation: .named)))")
-                            Spacer()
-                            Button("Cancel") { Task { await server.cancelExtraction() } }
+                if server.hasFullExtraction {
+                    Section("World Data") {
+                        LabeledContent("Maps") {
+                            Text(server.fullMaps ? "Full: line of sight and pathing" : "Quick: no line of sight or pathing")
                         }
-                    } else if !server.fullMaps {
-                        Button("Extract Full Maps…") { confirmFull = true }
-                            .disabled(server.isBusy)
+                        if let since = server.extractingSince {
+                            HStack {
+                                ProgressView().controlSize(.small)
+                                Text("Extracting, started \(since.formatted(.relative(presentation: .named)))")
+                                Spacer()
+                                Button("Cancel") { Task { await server.cancelExtraction() } }
+                            }
+                        } else if !server.fullMaps {
+                            Button("Extract Full Maps…") { confirmFull = true }
+                                .disabled(server.isBusy)
+                        }
+                        Text("Without the full maps, creatures walk and cast through walls. The full extraction takes hours; you can keep playing meanwhile, and it is used from the next server start.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    Text("Without the full maps, creatures walk and cast through walls. The full extraction takes hours; you can keep playing meanwhile, and it is used from the next server start.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 Section {

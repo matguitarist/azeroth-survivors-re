@@ -1,6 +1,7 @@
--- AzerothAdmin's pages: each button is one vmangos GM command (`src/game/Chat/Chat.cpp`). They need
--- an administrator account (level 6 for party bots, 3 to 5 for the rest), which the Azeroth
--- Survivors launcher sets under Settings › Server.
+-- AzerothAdmin's pages: each button is one vmangos GM command (`src/game/Chat/Chat.cpp`), which
+-- `AA:Cmd` respells for CMaNGOS. They need an administrator account (vmangos: level 6 for party
+-- bots, 3 to 5 for the rest; CMaNGOS: 3), which the Azeroth Survivors launcher sets under
+-- Settings › Server.
 
 local AA = AzerothAdmin
 local COL = { 0, 140, 280 }
@@ -52,9 +53,16 @@ local rows = {
   { "gm", "GM mode: monsters ignore you, the GM tag shows", ".gm on", ".gm off" },
   { "invisible", "Invisible to players", ".gm visible off", ".gm visible on" },
 }
+local cheatBoxes = {}
 for i, row in ipairs(rows) do
-  AA:Toggle(cheats, row[2], 0, -18 - (i - 1) * 28, row[1], row[3], row[4])
+  cheatBoxes[i] = AA:Toggle(cheats, row[2], 0, -18 - (i - 1) * 28, row[1], row[3], row[4])
 end
+-- CMaNGOS has no cooldown cheat, but clears them on a target: yourself.
+local clearCooldowns = AA:Button(cheats, "Clear my cooldowns", 0, -18 - table.getn(rows) * 28 - 6, 160, function()
+  TargetUnit("player")
+  AA:Cmd(".cooldown clear")
+end)
+clearCooldowns:Hide()
 
 -- Teleport --------------------------------------------------------------------------------------
 
@@ -168,7 +176,10 @@ end)
 
 -- Party bots --------------------------------------------------------------------------------------
 
-local bots = AA:Page("Bots")
+-- vmangos's party bots and CMaNGOS's playerbots each get their own layout of the page.
+local botsPage = AA:Page("Bots")
+local bots = CreateFrame("Frame", nil, botsPage)
+bots:SetAllPoints(botsPage)
 AA:Label(bots, "Fill your party with bots at your level", 0, 0)
 AA:CmdButton(bots, "Add a tank", COL[1], -18, 130, ".partybot add tank")
 AA:CmdButton(bots, "Add a healer", COL[2], -18, 130, ".partybot add healer")
@@ -193,6 +204,62 @@ note:SetPoint("TOPLEFT", bots, "TOPLEFT", 0, -230)
 note:SetWidth(AA.WIDTH - 40)
 note:SetJustifyH("LEFT")
 note:SetText("Paladins join the Alliance and shamans the Horde only. Bots leave when you log out.")
+
+-- CMaNGOS: random bots live in the world on their own; these join your party. They take orders
+-- in party chat (the playerbots module's strategies).
+local rndbots = CreateFrame("Frame", nil, botsPage)
+rndbots:SetAllPoints(botsPage)
+rndbots:Hide()
+AA:Label(rndbots, "Bots that play the world on their own", 0, 0)
+AA:CmdButton(rndbots, "Fill my party", COL[1], -18, 130, ".bot group")
+AA:Button(rndbots, "Invite target", COL[2], -18, 130, function()
+  if UnitExists("target") and UnitIsPlayer("target") then InviteByName(UnitName("target")) end
+end)
+AA:CmdButton(rndbots, "Remove target bot", COL[3], -18, 130, function()
+  if UnitExists("target") and UnitIsPlayer("target") then return ".bot remove " .. UnitName("target") end
+end)
+AA:Label(rndbots, "Orders to your party's bots", 0, -50)
+local ORDERS = { { "Follow me", "follow" }, { "Stay here", "stay" }, { "Attack my target", "attack" },
+  { "Leave the party", "leave" } }
+for i, order in ipairs(ORDERS) do
+  local index = i - 1
+  local column = index - math.floor(index / 3) * 3
+  local say = order[2]
+  AA:Button(rndbots, order[1], COL[column + 1], -68 - math.floor(index / 3) * 26, 130, function()
+    if GetNumPartyMembers() > 0 then
+      SendChatMessage(say, "PARTY")
+      AA.reply:SetText("|cff888888> /p " .. say .. "|r")
+    end
+  end)
+end
+AA:CmdButton(rndbots, "List my bots", COL[1], -130, 130, ".bot list")
+AA:CmdButton(rndbots, "Bots online", COL[2], -130, 130, ".rndbot stats")
+local rndnote = rndbots:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+rndnote:SetPoint("TOPLEFT", rndbots, "TOPLEFT", 0, -166)
+rndnote:SetWidth(AA.WIDTH - 40)
+rndnote:SetJustifyH("LEFT")
+rndnote:SetText("A hundred bots level, quest and group across the world. Invite one like any player, or fill your party with four of your level. In party chat they also answer other orders: \"help\" lists them.")
+
+-- On login: the layout for this server, its cheats only, packed.
+local function adaptToServer()
+  local cmangos = AA:IsCMaNGOS()
+  if cmangos then bots:Hide(); rndbots:Show() else rndbots:Hide(); bots:Show() end
+  local y = -18
+  for i, row in ipairs(rows) do
+    local box = cheatBoxes[i]
+    if AA:Dialect(row[3]) then
+      box:ClearAllPoints()
+      box:SetPoint("TOPLEFT", cheats, "TOPLEFT", 0, y)
+      box:Show()
+      y = y - 28
+    else
+      box:Hide()
+    end
+  end
+  clearCooldowns:ClearAllPoints()
+  clearCooldowns:SetPoint("TOPLEFT", cheats, "TOPLEFT", 4, y - 6)
+  if cmangos then clearCooldowns:Show() else clearCooldowns:Hide() end
+end
 
 -- Target and world ------------------------------------------------------------------------------
 
@@ -227,7 +294,12 @@ end)
 local listener = CreateFrame("Frame")
 listener:RegisterEvent("CHAT_MSG_SYSTEM")
 listener:RegisterEvent("VARIABLES_LOADED")
+listener:RegisterEvent("PLAYER_ENTERING_WORLD")
 listener:SetScript("OnEvent", function()
+  if event == "PLAYER_ENTERING_WORLD" then
+    adaptToServer()
+    return
+  end
   if event == "VARIABLES_LOADED" then
     AzerothAdminDB = AzerothAdminDB or {}
     -- Every cheat starts off at login on the launcher's server (`GM.LoginState = 0`,

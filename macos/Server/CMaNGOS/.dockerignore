@@ -1,0 +1,4 @@
+# The build reads only the Dockerfile's own files, not the maps, logs or game files beside them.
+*
+!InstallFullDB.config
+!cmangos-install

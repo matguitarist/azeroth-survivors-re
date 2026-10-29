@@ -43,11 +43,47 @@ reply:SetJustifyH("LEFT")
 reply:SetHeight(28)
 AA.reply = reply
 
+-- The launcher runs vmangos or CMaNGOS, which name some commands differently. The buttons are
+-- written in vmangos's; on CMaNGOS (the realm the launcher calls "Azeroth (bots)") these become
+-- its own, and `false` has no equivalent.
+AA.CMANGOS = {
+  [".unstuck"] = ".start",
+  [".combatstop"] = ".combat stop",
+  [".cheat god on"] = ".gm unkillable on",
+  [".cheat god off"] = ".gm unkillable off",
+  [".cheat waterwalk on"] = ".waterwalk on",
+  [".cheat waterwalk off"] = ".waterwalk off",
+  [".cheat cooldown on"] = false,
+  [".cheat cooldown off"] = false,
+  [".cheat casttime on"] = false,
+  [".cheat casttime off"] = false,
+  [".cheat powercost on"] = false,
+  [".cheat powercost off"] = false,
+}
+
+function AA:IsCMaNGOS()
+  local realm = GetRealmName()
+  return realm ~= nil and string.find(realm, "(bots)", 1, true) ~= nil
+end
+
+-- `text` as this server spells it, or nil when it has no such command.
+function AA:Dialect(text)
+  if not self:IsCMaNGOS() then return text end
+  local own = self.CMANGOS[text]
+  if own == false then return nil end
+  return own or text
+end
+
 -- Send a GM command: the server reads a chat line that starts with a dot, and answers in the
 -- system channel.
 function AA:Cmd(text)
-  SendChatMessage(text, "SAY")
-  reply:SetText("|cff888888> " .. text .. "|r")
+  local own = self:Dialect(text)
+  if not own then
+    reply:SetText("|cffff8888Not on this server: " .. text .. "|r")
+    return
+  end
+  SendChatMessage(own, "SAY")
+  reply:SetText("|cff888888> " .. own .. "|r")
 end
 
 -- A page is a frame filling the window between the tab row and the reply line.
@@ -116,7 +152,11 @@ function AA:Toggle(parent, text, x, y, key, on, off)
     AzerothAdminDB.toggles[key] = checked
     AA:Cmd(checked and on or off)
   end)
-  box:SetScript("OnShow", function() this:SetChecked(AzerothAdminDB.toggles[key]) end)
+  -- Shown at PLAYER_ENTERING_WORLD too, which can come before the saved variables.
+  box:SetScript("OnShow", function()
+    local toggles = AzerothAdminDB and AzerothAdminDB.toggles
+    this:SetChecked(toggles and toggles[key])
+  end)
   return box
 end
 

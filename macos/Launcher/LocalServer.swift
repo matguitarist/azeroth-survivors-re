@@ -1,13 +1,17 @@
 import Foundation
 
-/// Classic on this Mac: a vmangos 1.12.1 server in Docker, from vmangos-deploy's prebuilt images.
+/// Classic on this Mac: a 1.12.1 server in Docker, one of two kinds ([`ServerKind`]).
 ///
-/// Its files live in `Application Support/Azeroth Survivors/Server`: `compose.yaml` (rewritten from
-/// the app's copy at every start), `config/` (copied once, then the player's), `storage/` (the
-/// extracted maps, logs) and a Docker volume with the databases. Setup reads the terrain from the
-/// game's own Data folder in seconds and plays without line of sight or pathing; the full
-/// extraction adds them later, in the background, into `storage/extract-full`, swapped in at the
-/// next start.
+/// vmangos comes from vmangos-deploy's prebuilt images. Its files live in
+/// `Application Support/Azeroth Survivors/Server`: `compose.yaml` (rewritten from the app's copy at
+/// every start), `config/` (copied once, then the player's), `storage/` (the extracted maps, logs)
+/// and a Docker volume with the databases. Setup reads the terrain from the game's own Data folder
+/// in seconds and plays without line of sight or pathing; the full extraction adds them later, in
+/// the background, into `storage/extract-full`, swapped in at the next start.
+///
+/// CMaNGOS with random playerbots is built at setup from the app's recipe (`Server/CMaNGOS`), in
+/// `Server-CMaNGOS`, its configs inside the image. Its bots need line of sight and movement maps,
+/// so its setup builds them all at once, and it has no quick data and no later extraction.
 @MainActor
 final class LocalServer: ObservableObject {
     enum Phase: Equatable {
@@ -23,35 +27,64 @@ final class LocalServer: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .checking
+    /// The server this Mac plays on; [`select`] changes it.
+    @Published private(set) var kind: ServerKind = .current
     /// The full extraction is in place: line of sight and pathing are on.
     @Published private(set) var fullMaps = false
     /// The full extraction is running, since this date.
     @Published private(set) var extractingSince: Date?
     /// The server's accounts, kept across launches so Play knows of them before the server is up.
-    @Published private(set) var accounts: [String] = UserDefaults.standard.stringArray(forKey: "localAccounts") ?? [] {
-        didSet { UserDefaults.standard.set(accounts, forKey: "localAccounts") }
+    @Published private(set) var accounts: [String] = LocalServer.savedAccounts(.current) {
+        didSet { UserDefaults.standard.set(accounts, forKey: Self.accountsKey(kind)) }
     }
-    /// The accounts with administrator rights (level 6 in `account_access`): every GM command, party
-    /// bots included.
+    /// The accounts with administrator rights: every GM command, bots included.
     @Published private(set) var admins: Set<String> = []
-    /// vmangos's administrator level (`SEC_ADMINISTRATOR`, `src/shared/Common.h`).
-    static let adminLevel = 6
+    /// The administrator level: `SEC_ADMINISTRATOR` in each core's `src/shared/Common.h`.
+    var adminLevel: Int { kind == .vmangos ? 6 : 3 }
 
-    nonisolated static var dir: URL { Paths.support.appendingPathComponent("Server", isDirectory: true) }
+    nonisolated static func folder(_ kind: ServerKind) -> URL {
+        Paths.support.appendingPathComponent(kind == .vmangos ? "Server" : "Server-CMaNGOS", isDirectory: true)
+    }
+    nonisolated static var dir: URL { folder(.current) }
     nonisolated static var log: URL { Paths.logs.appendingPathComponent("server.log") }
     static let shared = LocalServer()
     static let address = "127.0.0.1"
     private static let extractContainer = "azeroth-survivors-extract"
 
-    private var marker: URL { Self.dir.appendingPathComponent(".setup-done") }
-    private var fullMarker: URL { Self.dir.appendingPathComponent("storage/.full-maps") }
-    private var staging: URL { Self.dir.appendingPathComponent("storage/extract-full") }
-    private var live: URL { Self.dir.appendingPathComponent("storage/mangosd/extracted-data") }
+    private var dir: URL { Self.folder(kind) }
+    private var marker: URL { dir.appendingPathComponent(".setup-done") }
+    private var fullMarker: URL { dir.appendingPathComponent("storage/.full-maps") }
+    private var staging: URL { dir.appendingPathComponent("storage/extract-full") }
+    private var live: URL { dir.appendingPathComponent("storage/mangosd/extracted-data") }
     /// The quick data, kept beside the full data in case it fails to start.
-    private var quick: URL { Self.dir.appendingPathComponent("storage/extract-quick") }
-    private var mangosConf: URL { Self.dir.appendingPathComponent("config/mangosd.conf") }
+    private var quick: URL { dir.appendingPathComponent("storage/extract-quick") }
+    private var mangosConf: URL { dir.appendingPathComponent("config/mangosd.conf") }
+    /// The realm database: accounts and the realm list.
+    private var realmDB: String { kind == .vmangos ? "realmd" : "classicrealmd" }
+
+    private static func accountsKey(_ kind: ServerKind) -> String {
+        kind == .vmangos ? "localAccounts" : "localAccounts-\(kind.rawValue)"
+    }
+    private static func savedAccounts(_ kind: ServerKind) -> [String] {
+        UserDefaults.standard.stringArray(forKey: accountsKey(kind)) ?? []
+    }
 
     var isSetUp: Bool { FileManager.default.fileExists(atPath: marker.path) }
+    /// Whether this kind has the background full extraction (vmangos only).
+    var hasFullExtraction: Bool { kind == .vmangos }
+
+    /// Play on the other kind of server from now on; the running one keeps running until a start
+    /// of this one stops it.
+    func select(_ new: ServerKind) async {
+        guard new != kind, !isBusy else { return }
+        UserDefaults.standard.set(new.rawValue, forKey: Prefs.serverKindKey)
+        kind = new
+        accounts = Self.savedAccounts(new)
+        admins = []
+        extractingSince = nil
+        phase = .checking
+        await refresh()
+    }
 
     private init() {
         // A helper that quits before reading its stdin must not take the launcher down with it.
@@ -68,7 +101,7 @@ final class LocalServer: ObservableObject {
         guard Docker.binary != nil else { phase = .noDocker; return }
         guard isSetUp else { phase = .notSetUp; return }
         guard await Docker.engineUp() else { phase = .stopped; return }
-        await checkExtraction()
+        if hasFullExtraction { await checkExtraction() }
         phase = await healthy() ? .running : .stopped
         if phase == .running { await loadAccounts() }
     }
@@ -82,11 +115,28 @@ final class LocalServer: ObservableObject {
         do {
             try await startEngine()
             try writeFiles(fresh: true)
-            phase = .busy("Downloading the server (about 1 GB)…")
-            try await compose(["pull", "database", "realmd", "mangosd"])
-            phase = .busy("Reading the maps from the game files…")
-            try await compose(["--profile", "tools", "run", "--rm", "-T", "extract-maps"])
-            phase = .busy("Building the world (a few minutes, the first time only)…")
+            switch kind {
+            case .vmangos:
+                phase = .busy("Downloading the server (about 1 GB)…")
+                try await compose(["pull", "database", "realmd", "mangosd"])
+                phase = .busy("Reading the maps from the game files…")
+                try await compose(["--profile", "tools", "run", "--rm", "-T", "extract-maps"])
+                try await stopOther()
+                phase = .busy("Building the world (a few minutes, the first time only)…")
+            case .cmangos:
+                phase = .busy("Downloading the database and the map reader (about 800 MB)…")
+                try await compose(["--profile", "tools", "pull", "database", "extract-maps"])
+                phase = .busy("Building the server from source (about 15 minutes, once)…")
+                try await compose(["build", "realmd"])
+                phase = .busy("Reading the maps from the game files…")
+                try await compose(["--profile", "tools", "run", "--rm", "-T", "extract-maps"])
+                phase = .busy("Building the movement maps the bots walk on (about 10 minutes, once)…")
+                try await compose(["--profile", "tools", "run", "--rm", "-T", "build-mmaps"])
+                phase = .busy("Building the world database…")
+                try await compose(["--profile", "tools", "run", "--rm", "-T", "install"])
+                try await stopOther()
+                phase = .busy("Creating the bots (a few minutes, the first time only)…")
+            }
             try await compose(["up", "-d", "database", "realmd", "mangosd"])
             try await waitHealthy(minutes: 30)
             FileManager.default.createFile(atPath: marker.path, contents: nil)
@@ -106,8 +156,12 @@ final class LocalServer: ObservableObject {
         do {
             try await startEngine()
             try writeFiles(fresh: false)
-            await checkExtraction()
-            let swapped = try swapInFullMaps()
+            var swapped = false
+            if hasFullExtraction {
+                await checkExtraction()
+                swapped = try swapInFullMaps()
+            }
+            try await stopOther()
             phase = .busy("Starting the server…")
             do {
                 try await compose(["up", "-d", "database", "realmd", "mangosd"])
@@ -145,8 +199,20 @@ final class LocalServer: ObservableObject {
     /// For the launcher quitting: stop without waiting (the containers save as they stop).
     func stopDetached() {
         guard isSetUp, let docker = Docker.binary else { return }
-        let p = Docker.process(docker, ["compose", "--project-directory", Self.dir.path, "stop"])
+        let p = Docker.process(docker, ["compose", "--project-directory", dir.path, "stop"])
         try? p.run()
+    }
+
+    /// The other kind takes the same ports: stop it if it runs.
+    private func stopOther() async throws {
+        guard let other = ServerKind.allCases.first(where: { $0 != kind }) else { return }
+        let otherDir = Self.folder(other)
+        guard FileManager.default.fileExists(atPath: otherDir.appendingPathComponent("compose.yaml").path),
+              let running = try? await compose(["ps", "-q"], quiet: true, directory: otherDir),
+              !running.isEmpty
+        else { return }
+        phase = .busy("Stopping the \(other.label) server…")
+        try await compose(["stop"], directory: otherDir)
     }
 
     // MARK: - Accounts
@@ -157,14 +223,12 @@ final class LocalServer: ObservableObject {
         guard phase == .running else { return "The server is not running." }
         let sql: String
         do {
-            var args = ["--account-sql"]
-            if changePassword { args.append("password") }
-            sql = try await Docker.run(Paths.gameBinary, args, stdin: "\(name)\n\(password)\n")
+            sql = try await Self.accountSQL(name, password: password, changePassword: changePassword)
         } catch {
             return Self.message(error)
         }
         do {
-            try await compose(["exec", "-T", "database", "mariadb", "-umangos", "-pmangos", "realmd"], stdin: sql)
+            try await compose(["exec", "-T", "database", "mariadb", "-umangos", "-pmangos", realmDB], stdin: sql)
         } catch {
             if Self.message(error).contains("Duplicate entry") { return "An account named \(name) already exists." }
             return Self.message(error)
@@ -179,21 +243,9 @@ final class LocalServer: ObservableObject {
 
     /// Give an account administrator rights, or take them; it takes effect at its next login.
     func setAdmin(_ name: String, _ on: Bool) async -> String? {
-        // Spliced into the SQL: only a name `--account-sql` would accept.
-        guard !name.isEmpty, name.count <= 16, name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
-            return "That account name is not allowed."
-        }
-        // The world server takes an account's level from `account_access` (`WorldSocket.cpp`), one row
-        // per realm, `-1` for all; `account.gmlevel` only mirrors it.
-        let user = name.uppercased()
-        let level = on ? Self.adminLevel : 0
-        let sql = """
-            UPDATE account SET gmlevel = \(level) WHERE username = '\(user)';
-            DELETE aa FROM account_access aa JOIN account a ON a.id = aa.id WHERE a.username = '\(user)';
-            \(on ? "INSERT INTO account_access (id, gmlevel, RealmID) SELECT id, \(level), -1 FROM account WHERE username = '\(user)';" : "")
-            """
+        guard let sql = Self.adminSQL(name, on, vmangos: kind == .vmangos) else { return "That account name is not allowed." }
         do {
-            try await compose(["exec", "-T", "database", "mariadb", "-umangos", "-pmangos", "realmd"], stdin: sql)
+            try await compose(["exec", "-T", "database", "mariadb", "-umangos", "-pmangos", realmDB], stdin: sql)
         } catch {
             return Self.message(error)
         }
@@ -203,12 +255,53 @@ final class LocalServer: ObservableObject {
 
     private func loadAccounts() async {
         guard let out = try? await compose(
-            ["exec", "-T", "database", "mariadb", "-umangos", "-pmangos", "-N", "-B", "realmd",
-             "-e", "SELECT a.username, COALESCE(MAX(aa.gmlevel), 0) FROM account a LEFT JOIN account_access aa ON aa.id = a.id GROUP BY a.id, a.username ORDER BY a.id"],
+            ["exec", "-T", "database", "mariadb", "-umangos", "-pmangos", "-N", "-B", realmDB, "-e",
+             Self.accountsQuery(vmangos: kind == .vmangos)],
             quiet: true) else { return }
+        (accounts, admins) = Self.parseAccounts(out, adminLevel: adminLevel)
+    }
+
+    // MARK: - Account SQL, shared with the home server
+
+    /// The game's own account SQL (`--account-sql`): it hashes the password the way the servers do.
+    nonisolated static func accountSQL(_ name: String, password: String, changePassword: Bool) async throws -> String {
+        var args = ["--account-sql"]
+        if changePassword { args.append("password") }
+        return try await Docker.run(Paths.gameBinary, args, stdin: "\(name)\n\(password)\n")
+    }
+
+    /// Administrator rights on or off; `nil` for a name `--account-sql` would refuse, as it is
+    /// spliced into the SQL.
+    nonisolated static func adminSQL(_ name: String, _ on: Bool, vmangos: Bool) -> String? {
+        guard !name.isEmpty, name.count <= 16, name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+            return nil
+        }
+        let user = name.uppercased()
+        let level = on ? (vmangos ? 6 : 3) : 0
+        var sql = "UPDATE account SET gmlevel = \(level) WHERE username = '\(user)';"
+        if vmangos {
+            // vmangos takes an account's level from `account_access` (`WorldSocket.cpp`), one row per
+            // realm, `-1` for all; `account.gmlevel` only mirrors it. CMaNGOS reads `gmlevel`.
+            sql += """
+
+                DELETE aa FROM account_access aa JOIN account a ON a.id = aa.id WHERE a.username = '\(user)';
+                \(on ? "INSERT INTO account_access (id, gmlevel, RealmID) SELECT id, \(level), -1 FROM account WHERE username = '\(user)';" : "")
+                """
+        }
+        return sql
+    }
+
+    /// Each account and its level. CMaNGOS: the random bots' own accounts
+    /// (`AiPlayerbot.RandomBotAccountPrefix`) stay out.
+    nonisolated static func accountsQuery(vmangos: Bool) -> String {
+        vmangos
+            ? "SELECT a.username, COALESCE(MAX(aa.gmlevel), 0) FROM account a LEFT JOIN account_access aa ON aa.id = a.id GROUP BY a.id, a.username ORDER BY a.id"
+            : "SELECT username, gmlevel FROM account WHERE username NOT LIKE 'RNDBOT%' ORDER BY id"
+    }
+
+    nonisolated static func parseAccounts(_ out: String, adminLevel: Int) -> ([String], Set<String>) {
         let rows = out.split(whereSeparator: \.isNewline).map { $0.split(separator: "\t").map(String.init) }
-        accounts = rows.compactMap(\.first)
-        admins = Set(rows.filter { $0.count == 2 && (Int($0[1]) ?? 0) >= Self.adminLevel }.map { $0[0] })
+        return (rows.compactMap(\.first), Set(rows.filter { $0.count == 2 && (Int($0[1]) ?? 0) >= adminLevel }.map { $0[0] }))
     }
 
     /// The login screen offers the first account's name, as if it had been remembered there.
@@ -316,7 +409,7 @@ final class LocalServer: ObservableObject {
     /// Settings later versions of the app changed in the shipped `mangosd.conf`, applied once to a
     /// config copied before them: `config/.version` counts which are in.
     private func migrateConf() throws {
-        let marker = Self.dir.appendingPathComponent("config/.version")
+        let marker = dir.appendingPathComponent("config/.version")
         let done = Int((try? String(contentsOf: marker, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 1
         // 2: an administrator plays as a player until they switch a cheat on (AzerothAdmin).
@@ -331,10 +424,10 @@ final class LocalServer: ObservableObject {
         guard !isBusy else { return }
         phase = .busy("Removing the server…")
         if await Docker.engineUp() {
-            await cancelExtraction()
+            if hasFullExtraction { await cancelExtraction() }
             _ = try? await compose(["down", "-v", "--rmi", "all"])
         }
-        try? FileManager.default.removeItem(at: Self.dir)
+        try? FileManager.default.removeItem(at: dir)
         fullMaps = false
         accounts = []
         admins = []
@@ -355,20 +448,33 @@ final class LocalServer: ObservableObject {
     }
 
     /// The app's compose file always; the configs and folders only when missing (or `fresh`).
+    /// CMaNGOS: its whole recipe, every time (its configs live in the image).
     private func writeFiles(fresh: Bool) throws {
         let fm = FileManager.default
         guard let bundled = Bundle.main.url(forResource: "Server", withExtension: nil) else {
             throw ServerError("The app is missing its server files. Reinstall it.")
         }
+        if kind == .cmangos {
+            for sub in ["storage/data", "storage/client-data", "storage/mangosd/logs", "storage/realmd/logs"] {
+                try fm.createDirectory(at: dir.appendingPathComponent(sub), withIntermediateDirectories: true)
+            }
+            let recipe = bundled.appendingPathComponent("CMaNGOS")
+            for name in try fm.contentsOfDirectory(atPath: recipe.path) {
+                let dest = dir.appendingPathComponent(name)
+                try? fm.removeItem(at: dest)
+                try fm.copyItem(at: recipe.appendingPathComponent(name), to: dest)
+            }
+            return
+        }
         for sub in ["config", "storage/mangosd/client-data", "storage/mangosd/extracted-data", "storage/mangosd/logs",
                     "storage/mangosd/honor", "storage/realmd/logs", "storage/database/custom-sql"] {
-            try fm.createDirectory(at: Self.dir.appendingPathComponent(sub), withIntermediateDirectories: true)
+            try fm.createDirectory(at: dir.appendingPathComponent(sub), withIntermediateDirectories: true)
         }
-        let compose = Self.dir.appendingPathComponent("compose.yaml")
+        let compose = dir.appendingPathComponent("compose.yaml")
         try? fm.removeItem(at: compose)
         try fm.copyItem(at: bundled.appendingPathComponent("compose.yaml"), to: compose)
         for name in ["mangosd.conf", "realmd.conf"] {
-            let dest = Self.dir.appendingPathComponent("config/\(name)")
+            let dest = dir.appendingPathComponent("config/\(name)")
             if fresh { try? fm.removeItem(at: dest) }
             if !fm.fileExists(atPath: dest.path) {
                 try fm.copyItem(at: bundled.appendingPathComponent(name), to: dest)
@@ -377,17 +483,17 @@ final class LocalServer: ObservableObject {
         if fresh {
             try? fm.removeItem(at: fullMarker)
             // A fresh copy already holds every migration.
-            try "2".write(to: Self.dir.appendingPathComponent("config/.version"), atomically: true, encoding: .utf8)
+            try "2".write(to: dir.appendingPathComponent("config/.version"), atomically: true, encoding: .utf8)
         }
         try migrateConf()
     }
 
     @discardableResult
     private func compose(_ args: [String], stdin: String? = nil, quiet: Bool = false,
-                         project: String? = nil) async throws -> String {
+                         project: String? = nil, directory: URL? = nil) async throws -> String {
         guard let docker = Docker.binary else { throw ServerError("Docker is not installed.") }
         let name = project.map { ["-p", $0] } ?? []
-        return try await Docker.run(docker, ["compose", "--project-directory", Self.dir.path] + name + args,
+        return try await Docker.run(docker, ["compose", "--project-directory", (directory ?? dir).path] + name + args,
                                     stdin: stdin, quiet: quiet)
     }
 
@@ -431,7 +537,7 @@ final class LocalServer: ObservableObject {
         }
     }
 
-    private static func message(_ error: Error) -> String {
+    nonisolated static func message(_ error: Error) -> String {
         (error as? ServerError)?.message ?? error.localizedDescription
     }
 }

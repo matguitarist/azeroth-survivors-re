@@ -41,12 +41,47 @@ The launcher:
   that mode (each start takes about a minute: vmangos-deploy checks its migrations), and stops when
   the game or the launcher quits unless Settings keeps it. Ports bind to 127.0.0.1. Commands and
   their output go to `~/Library/Logs/Azeroth Survivors/server.log`, never stdin.
+- **Or CMaNGOS with bots** (the Server picker): [CMaNGOS Classic](https://github.com/cmangos/mangos-classic)
+  with the [playerbots](https://github.com/cmangos/playerbots) module and
+  [classic-db](https://github.com/cmangos/classic-db), built on the Mac at setup from
+  `macos/Server/CMaNGOS/Dockerfile` (no arm64 images exist, and playerbots has no license, so the
+  app ships the recipe, not a binary): about 25 minutes with the maps, each source pinned to a tested commit.
+  It lives in `Application Support/Azeroth Survivors/Server-CMaNGOS` (project
+  `azeroth-survivors-cmangos`), with its own databases and accounts, on the same ports, so starting
+  one stops the other. The image carries its configs: anticheat off (with it on, CMaNGOS arms
+  Warden for every session, whatever `Warden.Enable` says), 100 random bots. The bots cannot run
+  without line of sight and movement maps (they assert a navmesh), so setup builds the full data:
+  CMaNGOS's own map extractor crashes on arm64, so vmangos's `MapExtractor`, `VMapExtractor` and
+  `VMapAssembler` read the game files (the same `z1.4` maps and `VMAP_7.0` models, about a
+  minute), then CMaNGOS's `MoveMapGen` builds its own movement maps (`MMAP_VERSION` 8, vmangos's
+  are 6) on every core: about 7 minutes and 1.8 GB on a 10-core Mac. Two guards stay patched in
+  case a map lacks them: a grid load skips a missing navmesh tile (`MoveMap.cpp`), and the bots'
+  nearest-point lookup finds nothing instead of asserting (`WorldPosition.cpp`). `cmangos-install` builds the databases,
+  removes the base SQL's four default accounts and names the realm `Azeroth (bots)`, which is how
+  AzerothAdmin knows to send CMaNGOS's commands. Administrators are `gmlevel` 3; the random bots'
+  `RNDBOT` accounts are left out of the launcher's list.
+- **Or the same CMaNGOS on a home server** (Classic › Home server, Settings › Home Server;
+  `HomeServer.swift`): an always-on Linux machine with Docker on the network, an Unraid box say,
+  driven over SSH with a key the launcher can make (`BatchMode`, no passphrase, the host's key
+  accepted on first use). Setup rsyncs the recipe and the seven MPQs the map tools read into
+  `/mnt/user/appdata/azeroth-survivors-cmangos` (Unraid) or `~/azeroth-survivors-cmangos`, writes
+  an `.env` (`LAN_IP` from the address, `BOTS`, `BOT_ACCOUNTS`), and starts `home-setup` there
+  detached: the same steps, an hour or two on a small CPU, its step in `.setup-step`, then
+  `.setup-done` or `.setup-failed`, so the launcher can quit and pick it up again. Everything after
+  goes through `home-compose` (the server's `docker compose`, or the `docker:29-cli` image's where
+  there is none, as on Unraid) with `compose.lan.yaml` on top: ports on the LAN address, restarts
+  with the machine, kept running when the game quits. Accounts are the same `--account-sql` and
+  SQL, fed to `docker exec` of its database; the bot count rewrites `.env` and recreates
+  `mangosd`. Nothing is forwarded to the internet.
 - **Installs AzerothPlus and AzerothAdmin** for Classic (`Addons.swift`, Settings › General):
   before each Classic launch the shipped addons replace their folders in `benilla-config/AddOns`,
   so the app's version is the one that runs; other addons there are untouched, and saved settings
-  live in `benilla-config/saved`. AzerothAdmin sends vmangos GM commands, so it needs an
-  administrator account (`gmlevel` 6, set per account in Settings › Server; new accounts default
-  to it). The shipped `mangosd.conf` starts a GM as a player (`GM.LoginState = 0`,
+  live in `benilla-config/saved`. AzerothPlus (`/ap` or its minimap button) adds a cooldown manager, a
+  damage meter, a swing timer, a personal resource display, smaller centered unit frames, an "All
+  objectives" tracker, a windowed map with the zone's quests, minimap coordinates and movable buff
+  icons, each a box in its options. AzerothAdmin sends vmangos GM commands, respelled for CMaNGOS
+  (`AA.CMANGOS`, with its own Bots page), so it needs an administrator account (`gmlevel` 6 on
+  vmangos, 3 on CMaNGOS, set per account in Settings › Server; new accounts default to it). The shipped `mangosd.conf` starts a GM as a player (`GM.LoginState = 0`,
   `GM.Visible = 1`, `GM.CheatGod = 0`); `migrateConf` applies that once to older copies
   (`config/.version`).
 - **Updates itself** with [Sparkle](https://sparkle-project.org) from the feed at
