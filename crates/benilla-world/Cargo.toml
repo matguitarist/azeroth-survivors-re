@@ -31,6 +31,8 @@ benilla-formats = { path = "../benilla-formats", default-features = false }
 benilla-wmo = { path = "../benilla-wmo" }
 bevy.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
+# MetalFX reaches the raw Metal objects through `wgpu::hal` (`metalfx.rs`); bevy's own wgpu.
+wgpu.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 # macOS AppKit calls, at `benilla-app`'s pins so the graph has one objc2.

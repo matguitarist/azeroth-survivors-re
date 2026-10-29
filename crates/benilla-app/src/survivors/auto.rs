@@ -426,6 +426,37 @@ pub(super) fn drive(
     }
 }
 
+/// With `WOW_GPU_MS=1`: the whole-frame GPU time each ten seconds, median and 90th percentile,
+/// beside the run's own line; the frame rate alone cannot tell the GPU from the main thread.
+#[cfg(feature = "dev")]
+pub(super) fn gpu_log(
+    time: Res<Time<Real>>,
+    gpu: Option<Res<crate::perf::GpuMsShared>>,
+    mut samples: Local<Vec<f32>>,
+    mut since: Local<f32>,
+) {
+    let Some(gpu) = gpu else {
+        return;
+    };
+    let ns = gpu.0.load(std::sync::atomic::Ordering::Relaxed);
+    if ns > 0 {
+        samples.push(ns as f32 / 1e6);
+    }
+    *since += time.delta_secs();
+    if *since < 10.0 || samples.is_empty() {
+        return;
+    }
+    *since = 0.0;
+    samples.sort_by(f32::total_cmp);
+    let n = samples.len();
+    info!(
+        "survivors auto: gpu median={:.2}ms p90={:.2}ms over {n} frames",
+        samples[n / 2],
+        samples[n * 9 / 10]
+    );
+    samples.clear();
+}
+
 /// What [`drive`] has no parameters left for: `:map` opens the world map 20 seconds into the run,
 /// captures it and shuts it; `:idle` takes the results' Play Again.
 #[allow(clippy::too_many_arguments)]

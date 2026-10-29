@@ -3,8 +3,30 @@
 # or the docker:cli image's where it has none (Unraid). The launcher runs everything through it.
 set -euo pipefail
 cd "$(dirname "$0")"
-f=(-p azeroth-survivors-cmangos -f compose.yaml -f compose.lan.yaml)
-if docker compose version >/dev/null 2>&1; then exec docker compose "${f[@]}" "$@"; fi
+p=azeroth-survivors-cmangos
+f=(-p "$p" -f compose.yaml -f compose.lan.yaml)
 d=$PWD
-exec docker run --rm -i -v /var/run/docker.sock:/var/run/docker.sock -v "$d:$d" -w "$d" docker:29-cli \
+if docker compose version >/dev/null 2>&1; then
     docker compose "${f[@]}" "$@"
+else
+    docker run --rm -i -v /var/run/docker.sock:/var/run/docker.sock -v "$d:$d" -w "$d" docker:29-cli \
+        docker compose "${f[@]}" "$@"
+fi
+
+# Unraid stops every container with `docker stop` when Docker shuts down, which `unless-stopped`
+# takes for a stop by hand, and starts only what its autostart list names: after an `up`, the
+# server's containers go on that list, the database first with time to open before the others; a
+# `stop` or `down` takes them off, so a server stopped from the launcher stays stopped.
+list=/var/lib/docker/unraid-autostart
+if [[ -f $list ]]; then
+    case " $* " in
+    " up "*)
+        for c in "$p-database-1 10" "$p-realmd-1" "$p-mangosd-1"; do
+            grep -q "^${c%% *}\( \|$\)" "$list" || echo "$c" >>"$list"
+        done
+        ;;
+    *" stop "* | *" down "*)
+        sed -i "/^$p-/d" "$list"
+        ;;
+    esac
+fi

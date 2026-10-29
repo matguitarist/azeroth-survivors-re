@@ -267,7 +267,7 @@ private struct GraphicsSettings: View {
                 stops("Weather", c("weatherDensity", "3"), Stops.weather)
                 Toggle("Full-screen glow", isOn: c("ffxGlow", "1").bool)
                 stops("Texture filtering", c("anisotropic", "1"), Stops.anisotropic)
-                Text("Render scale below 100% draws the 3D world at a lower resolution for speed; the interface stays sharp.")
+                Text("Render scale below 100% draws the 3D world at a lower resolution for speed, and MetalFX scales it back up; the interface stays sharp. At 100%, the game keeps the 3D near 2560×1600 pixels on larger screens, such as a 5K display.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

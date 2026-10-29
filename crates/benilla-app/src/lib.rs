@@ -192,6 +192,7 @@ mod weapon_trail;
 /// `benilla_app::webenv::var` by that exact path; every in-crate caller still just writes
 /// `crate::webenv::var` like any other module.
 pub mod webenv;
+mod render_budget;
 mod webprogress;
 mod world_backdrop;
 mod world_state;
@@ -439,6 +440,8 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
             run_mode::start_state()
         },
     });
+    // The world's pixel budget on a large Retina screen, in both modes.
+    app.add_plugins(render_budget::plugin);
     if survivors {
         app.add_plugins(survivors::SurvivorsPlugin);
     }

@@ -1070,6 +1070,17 @@ impl ViewNode for FfxTransparent2dNode {
             return Ok(());
         };
 
+        // A world rendered smaller than this target arrives scaled by MetalFX, where it can.
+        let size = target.main_texture().size();
+        let upscaled = backdrop.and_then(|view| view.source).and_then(|source| {
+            let world_target = world.get::<ViewTarget>(source)?;
+            crate::metalfx::upscale(
+                render_context,
+                source,
+                world_target.main_texture(),
+                UVec2::new(size.width, size.height),
+            )
+        });
         // The ground is resolved and bound before the pass, so the task closure owns only handles.
         let ground = backdrop
             .and_then(|view| view.source.map(|source| (view, source)))
@@ -1097,7 +1108,9 @@ impl ViewNode for FfxTransparent2dNode {
                     "ffx_glow_combine",
                     &layout,
                     &BindGroupEntries::sequential((
-                        world_target.main_texture_view(),
+                        upscaled
+                            .as_ref()
+                            .unwrap_or(world_target.main_texture_view()),
                         &pipelines.sampler,
                         &textures.quarter_a.default_view,
                         textures.gain_buf.as_entire_binding(),

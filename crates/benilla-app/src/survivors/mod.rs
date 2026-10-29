@@ -240,6 +240,8 @@ impl Plugin for SurvivorsPlugin {
                 )
                 .add_systems(Update, auto::plan.before(WorldStage::Input))
                 .add_systems(Update, auto::extra.after(auto::drive));
+            #[cfg(feature = "dev")]
+            app.add_systems(Update, auto::gpu_log);
         }
     }
 }
