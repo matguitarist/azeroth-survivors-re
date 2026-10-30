@@ -6,6 +6,7 @@ import SwiftUI
 struct LocalServerPanel: View {
     @EnvironmentObject private var server: LocalServer
     @EnvironmentObject private var game: GameProcess
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -51,7 +52,7 @@ struct LocalServerPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
                     Button("Try Again") { Task { await server.refresh() } }
-                    Button("Show Log") { reveal(LocalServer.log) }
+                    Button("Show Log") { showLogs(.localCommands, openWindow) }
                 }
             }
         }
@@ -173,6 +174,7 @@ struct AccountForm: View {
 struct ServerSettings: View {
     @EnvironmentObject private var server: LocalServer
     @EnvironmentObject private var game: GameProcess
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(Prefs.keepServerKey) private var keepServer = false
     @State private var newAccount = false
     @State private var passwordFor: String?
@@ -183,7 +185,12 @@ struct ServerSettings: View {
         Form {
             Section("Server on this Mac") {
                 LabeledContent("Server") { ServerKindPicker() }
-                LabeledContent("Status") { Text(statusText) }
+                LabeledContent("Status") {
+                    HStack(spacing: 6) {
+                        StatusDot(health: server.health)
+                        Text(statusText)
+                    }
+                }
                 if server.isSetUp {
                     HStack {
                         if server.phase == .running {
@@ -194,7 +201,7 @@ struct ServerSettings: View {
                         }
                         Spacer()
                         Button("Show Server Folder") { reveal(LocalServer.dir) }
-                        Button("Show Log") { reveal(LocalServer.log) }
+                        Button("Show Logs") { showLogs(.localServer, openWindow) }
                     }
                     .disabled(server.isBusy)
                     Toggle(isOn: $keepServer) {
@@ -257,7 +264,6 @@ struct ServerSettings: View {
             }
         }
         .formStyle(.grouped)
-        .fixedSize(horizontal: false, vertical: true)
         .task { await server.refresh() }
         .task(id: server.extractingSince) {
             // Follow an extraction while this tab is open.

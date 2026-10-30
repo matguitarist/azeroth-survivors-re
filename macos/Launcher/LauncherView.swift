@@ -67,7 +67,7 @@ struct LauncherView: View {
         .alert(item: $game.crash) { crash in
             Alert(title: Text("The game stopped unexpectedly"),
                   message: Text(crash.message + (crash.logTail.isEmpty ? "" : "\n\nThe log is in ~/Library/Logs/\(Paths.appName).")),
-                  primaryButton: .default(Text("Show Log")) { reveal(Paths.gameLog) },
+                  primaryButton: .default(Text("Show Log")) { showLogs(.game, openWindow) },
                   secondaryButton: .cancel(Text("OK")))
         }
     }

@@ -24,22 +24,20 @@ struct LauncherApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .commands {
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { updater.checkForUpdates() }
-                    .disabled(!updater.canCheck)
-            }
-            CommandGroup(replacing: .newItem) {}
-            CommandMenu("Game") {
-                Button("Play") { play() }
-                    .keyboardShortcut("p")
-                    .disabled(data.state != .ready || game.running || !Launcher.canPlay(server: server, home: home))
-                Divider()
-                Button("Verify Game Files") { data.verify() }
-                    .disabled(data.isBusy || game.running)
-                Button("Show Game Data in Finder") { reveal(Paths.data) }
-                Button("Show Logs in Finder") { reveal(Paths.logs) }
-            }
+            LauncherCommands(data: data, game: game, config: config, updater: updater, server: server, home: home)
         }
+
+        Window("Logs", id: "logs") {
+            LogsWindow()
+                .environmentObject(server)
+                .environmentObject(home)
+        }
+        .defaultSize(width: 1100, height: 700)
+
+        Window("Help", id: "help") {
+            HelpWindow()
+        }
+        .defaultSize(width: 900, height: 640)
 
         Settings {
             SettingsView()
@@ -50,10 +48,7 @@ struct LauncherApp: App {
                 .environmentObject(server)
                 .environmentObject(home)
         }
-    }
-
-    private func play() {
-        Launcher.play(game: game, config: config)
+        .windowResizability(.contentMinSize)
     }
 }
 

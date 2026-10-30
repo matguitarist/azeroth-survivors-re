@@ -1,17 +1,101 @@
 import AppKit
 import SwiftUI
 
-struct SettingsView: View {
-    var body: some View {
-        TabView {
-            GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
-            GraphicsSettings().tabItem { Label("Graphics", systemImage: "display") }
-            SoundSettings().tabItem { Label("Sound", systemImage: "speaker.wave.2") }
-            ServerSettings().tabItem { Label("Server", systemImage: "server.rack") }
-            HomeServerSettings().tabItem { Label("Home Server", systemImage: "house") }
-            AdvancedSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
+/// The panes of Settings, in its sidebar.
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case general, graphics, sound, server, homeServer, homeGame, homeMaintenance, advanced
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .graphics: "Graphics"
+        case .sound: "Sound"
+        case .server: "Server on This Mac"
+        case .homeServer: "Home Server"
+        case .homeGame: "Bots & Rates"
+        case .homeMaintenance: "Backups & Updates"
+        case .advanced: "Advanced"
         }
-        .frame(width: 520)
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .graphics: "display"
+        case .sound: "speaker.wave.2"
+        case .server: "desktopcomputer"
+        case .homeServer: "house"
+        case .homeGame: "person.2"
+        case .homeMaintenance: "clock.arrow.circlepath"
+        case .advanced: "wrench.and.screwdriver"
+        }
+    }
+
+    static let sections: [(String?, [SettingsPane])] = [
+        (nil, [.general, .graphics, .sound]),
+        ("Classic servers", [.server, .homeServer, .homeGame, .homeMaintenance]),
+        (nil, [.advanced]),
+    ]
+}
+
+/// A sidebar like System Settings', each pane scrolling within a window of a fixed size.
+struct SettingsView: View {
+    @AppStorage("settingsPane") private var pane = SettingsPane.general
+    @EnvironmentObject private var server: LocalServer
+    @EnvironmentObject private var home: HomeServer
+
+    var body: some View {
+        NavigationSplitView {
+            List(selection: Binding(get: { pane }, set: { if let p = $0 { pane = p } })) {
+                ForEach(SettingsPane.sections.indices, id: \.self) { i in
+                    let (title, panes) = SettingsPane.sections[i]
+                    Section {
+                        ForEach(panes) { p in
+                            HStack {
+                                Label {
+                                    Text(p.title)
+                                } icon: {
+                                    // Every symbol in the same box, wide ones scaled down to it.
+                                    Image(systemName: p.symbol)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 20, height: 17)
+                                }
+                                Spacer()
+                                if p == .server { StatusDot(health: server.health) }
+                                if p == .homeServer { StatusDot(health: home.health) }
+                            }
+                            .tag(p)
+                        }
+                    } header: {
+                        if let title { Text(title) }
+                    }
+                }
+            }
+            .navigationSplitViewColumnWidth(200)
+            .toolbar(removing: .sidebarToggle)
+        } detail: {
+            detail
+                .navigationTitle(pane.title)
+        }
+        // Opens on all of General at once; smaller still works, the panes scroll.
+        .frame(minWidth: 760, idealWidth: 900, maxWidth: .infinity, minHeight: 520, idealHeight: 720, maxHeight: .infinity)
+        .background(ResizableWindow())
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch pane {
+        case .general: GeneralSettings()
+        case .graphics: GraphicsSettings()
+        case .sound: SoundSettings()
+        case .server: ServerSettings()
+        case .homeServer: HomeServerSettings()
+        case .homeGame: HomeGameSettings()
+        case .homeMaintenance: HomeMaintenanceSettings()
+        case .advanced: AdvancedSettings()
+        }
     }
 }
 
@@ -91,7 +175,6 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func choose() {
@@ -164,7 +247,6 @@ private struct GameSettingsForm<Content: View>: View {
             content.disabled(game.running)
         }
         .formStyle(.grouped)
-        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -344,6 +426,7 @@ private struct SoundSettings: View {
 private struct AdvancedSettings: View {
     @EnvironmentObject private var config: GameConfig
     @EnvironmentObject private var game: GameProcess
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(Prefs.dataURLKey) private var dataURL = ""
     @State private var confirmReset = false
 
@@ -361,7 +444,7 @@ private struct AdvancedSettings: View {
 
             Section("Troubleshooting") {
                 HStack {
-                    Button("Show Logs") { reveal(Paths.gameLog) }
+                    Button("Show Logs") { showLogs(.game, openWindow) }
                     Button("Show Game Settings Folder") { reveal(Paths.gameConfig) }
                 }
                 Button("Reset Game Settings…") { confirmReset = true }
@@ -373,6 +456,5 @@ private struct AdvancedSettings: View {
             }
         }
         .formStyle(.grouped)
-        .fixedSize(horizontal: false, vertical: true)
     }
 }

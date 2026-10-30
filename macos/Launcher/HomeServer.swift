@@ -117,7 +117,6 @@ final class HomeServer: ObservableObject {
 
     static let shared = HomeServer()
     static let defaultKey = "~/.ssh/id_ed25519"
-    static let log = Paths.logs.appendingPathComponent("home-server.log")
     /// The CMaNGOS level of an administrator (`SEC_ADMINISTRATOR`).
     let adminLevel = 3
     private static let project = "azeroth-survivors-cmangos"
@@ -217,12 +216,12 @@ final class HomeServer: ObservableObject {
         case "running":
             phase = .settingUp(status["step"].map { $0.isEmpty ? "Starting…" : $0 } ?? "Starting…")
         case "failed":
-            phase = .failed("The setup stopped at: \(status["step"] ?? "?") Show Log has the end of its output.")
+            phase = .failed("The setup stopped at: \(status["step"] ?? "?") Show Log has its output.")
         case "done" where status["update"] == "running":
             phase = .updating(status["updatestep"].map { $0.isEmpty ? "Starting…" : $0 } ?? "Starting…")
         case "done":
             updateFailed = status["update"] == "failed"
-                ? "The last update stopped at: \(status["updatestep"] ?? "?") The old server was put back. Show Log has the end of its output."
+                ? "The last update stopped at: \(status["updatestep"] ?? "?") The old server was put back. Show Log has its output."
                 : nil
             let up = status["realmd"] == "healthy" && status["mangosd"] == "healthy"
             phase = up ? .running : .stopped
@@ -366,7 +365,7 @@ final class HomeServer: ObservableObject {
                 // Gone or stopped: the end of its log says why.
                 let state = try? await ssh("docker inspect -f '{{.State.Status}}' \(Self.project)-\(name)-1", quiet: true)
                 if state == "exited" || state == "dead" {
-                    throw ServerError("The server's \(name) stopped while starting. Show Log has the end of its output.")
+                    throw ServerError("The server's \(name) stopped while starting. Show Log has its output.")
                 }
             }
         }
@@ -513,17 +512,21 @@ final class HomeServer: ObservableObject {
 
     // MARK: - Log and removal
 
-    /// The end of the setup's output and of the game server's, into a file here, shown in Finder.
-    func showLog() async {
-        let text = (try? await ssh("""
-            cd \(folder) 2>/dev/null && { echo '== setup.log'; tail -n 200 setup.log 2>/dev/null; }
-            [ -f update.log ] && { echo '== update.log'; tail -n 200 update.log; }
-            echo '== mangosd'; docker logs --tail 300 \(Self.project)-mangosd-1 2>&1
-            echo '== realmd'; docker logs --tail 50 \(Self.project)-realmd-1 2>&1
-            """, quiet: true)) ?? "The server could not be reached."
-        try? FileManager.default.createDirectory(at: Paths.logs, withIntermediateDirectories: true)
-        try? text.write(to: Self.log, atomically: true, encoding: .utf8)
-        NSWorkspace.shared.activateFileViewerSelecting([Self.log])
+    /// The end of one of the server's logs, for the Logs window.
+    func log(_ source: LogSource, lines: Int) async throws -> String {
+        guard problem == nil else { throw ServerError(problem ?? "") }
+        try await findFolder()
+        let logs = "\(folder)/storage/mangosd/logs"
+        let script: String
+        switch source {
+        case .homeServer: script = "tail -n \(lines) \(logs)/Server.log 2>/dev/null"
+        case .homeDatabase: script = "tail -n \(lines) \(logs)/DBErrors.log 2>/dev/null"
+        case .homeRealm: script = "docker logs --timestamps --tail \(lines) \(Self.project)-realmd-1 2>&1"
+        case .homeSetup: script = "tail -n \(lines) \(folder)/setup.log 2>/dev/null"
+        case .homeUpdate: script = "tail -n \(lines) \(folder)/update.log 2>/dev/null"
+        default: return ""
+        }
+        return try await ssh(script + "; true", quiet: true)
     }
 
     /// The server's containers, its databases (every character on it), its image and its folder go.

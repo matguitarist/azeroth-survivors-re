@@ -71,14 +71,14 @@ The launcher:
   goes through `home-compose` (the server's `docker compose`, or the `docker:29-cli` image's where
   there is none, as on Unraid) with `compose.lan.yaml` on top: ports on the LAN address, restarts
   with the machine, kept running when the game quits. Accounts are the same `--account-sql` and
-  SQL, fed to `docker exec` of its database. Settings › Home Server › Bots and Rates rewrite
+  SQL, fed to `docker exec` of its database. Settings › Bots & Rates rewrites
   `.env` keys (`BOTS`, `BOTS_NEAR_PLAYERS`, `BOTS_SYNC_LEVEL`, `RATE_XP`, `RATE_LOOT`, `RATE_GOLD`,
   `RATE_REPUTATION`, `RATE_REST`) that `compose.yaml` passes on as CMaNGOS (`Mangosd_`) and
   playerbots (`PlayerBots_`) settings, then recreate `mangosd`; bringing bots to players also
   shortens how often they move on (`BOTS_MOVE_MIN`, `BOTS_MOVE_MAX`). The launcher keeps the
   server's scripts and compose files current on each look. Nothing is forwarded to the internet. `home-backup` dumps the accounts and characters
   nightly at 4:30 (a dynamix cron file on Unraid, else root's crontab; to
-  `/mnt/user/backups/azeroth-survivors-cmangos`, else `backups/`, 14 kept), and Settings › Home Server backs up and restores on demand, a restore saving the state
+  `/mnt/user/backups/azeroth-survivors-cmangos`, else `backups/`, 14 kept), and Settings › Backups & Updates backs up and restores on demand, a restore saving the state
   it replaces first. `home-update check` compares the commits the image was built from (`.refs`,
   else the Dockerfile's pins) with the newest on GitHub; Update Server… starts `home-update run`
   detached (`.update-step`, `update.log`): it backs up, rebuilds the image, reinstalls the world
@@ -101,7 +101,7 @@ The launcher:
   (`config/.version`).
 - **Updates itself** with [Sparkle](https://sparkle-project.org) from the feed at
   `https://github.com/<repo>/releases/latest/download/appcast.xml`.
-- Logs the game to `~/Library/Logs/Azeroth Survivors/game.log` and shows its tail on a crash.
+- Logs the game to `~/Library/Logs/Azeroth Survivors/game.log` and shows its tail on a crash. The Logs window (Game › Show Logs, ⌘L; `LogViewer.swift`) reads it, the server on this Mac and the home server's logs (over SSH), with levels, search, the most frequent problems and live following.
 - **Notices a stuck start:** if the game hasn't opened its window after 25 s (in practice an audio
   driver not answering, such as a remote-desktop one), the launcher comes back with Keep Waiting
   and Force Quit, and steps aside again by itself if the window appears.
