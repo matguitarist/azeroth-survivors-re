@@ -23,7 +23,7 @@ sql() { docker exec "$p-database-1" mariadb -umangos -pmangos -N -B -e "$1" 2>/d
 noise='AbstractPathMovementGenerator::Initialize Path empty|is not moving but have spline movement enabled|try to add and already existing cooldown|CastSpell: unknown spell id 0 |Cannot teleport bot .* - no locations available'
 
 now() {
-    local realmd mangosd database since cpu=0 mem=0 dbmem=0 players="" bots=0 brackets="" errors="" backups=""
+    local realmd mangosd database since cpu=0 mem=0 dbmem=0 players="" bots=0 brackets="" errors="" backups="" nplayers=0
     realmd=$(health realmd) mangosd=$(health mangosd) database=$(health database)
     since=$(docker inspect -f '{{.State.StartedAt}}' "$p-mangosd-1" 2>/dev/null || true)
     # `49.15%|5.419GiB / 22.92GiB`, in bytes.
@@ -38,6 +38,7 @@ now() {
     if [ "$database" = healthy ]; then
         while IFS=$'\t' read -r name level race class; do
             [ -n "$name" ] || continue
+            nplayers=$((nplayers + 1))
             players+="${players:+,}{\"name\":$(js "$name"),\"level\":$level,\"race\":$race,\"class\":$class}"
         done < <(sql "SELECT c.name, c.level, c.race, c.class FROM classiccharacters.characters c JOIN classicrealmd.account a ON a.id = c.account WHERE c.online = 1 AND a.username NOT LIKE 'RNDBOT%' ORDER BY c.level DESC, c.name")
         while IFS=$'\t' read -r bracket n; do
@@ -76,8 +77,6 @@ now() {
     read -r total available < <(free -b | awk '/^Mem:/ {print $2, $7}')
     cores=$(nproc)
     load=$(cut -d' ' -f1 /proc/loadavg)
-    local nplayers
-    nplayers=$(printf '%s' "$players" | grep -o '"name"' | wc -l)
 
     cat >"$out/status.json.part" <<EOF
 {"updated":$(date +%s),"address":$(js "$(sed -n 's/^LAN_IP=//p' .env 2>/dev/null || true)"),
