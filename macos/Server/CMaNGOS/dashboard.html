@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Azeroth Server</title>
+<!-- The home server's dashboard: `home-status` writes status.json and history.tsv beside this page
+     every minute; it reads them every 30 seconds. Self-contained, no outside requests. -->
+<style>
+:root {
+  --bg: #f5f5f7; --card: #ffffff; --text: #1d1d1f; --dim: #6e6e73; --line: #e5e5ea;
+  --green: #1f9d55; --orange: #c77700; --red: #d70015; --accent: #0a66d8; --bar: #0a66d8;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111113; --card: #1c1c1f; --text: #f2f2f7; --dim: #98989f; --line: #2c2c30;
+          --green: #32d74b; --orange: #ff9f0a; --red: #ff453a; --accent: #4f9dff; --bar: #4f9dff; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+h1 { font-size: 24px; margin: 0; }
+.status { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px;
+          background: var(--card); border: 1px solid var(--line); font-weight: 600; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+.dot.up { background: var(--green); } .dot.working { background: var(--orange); } .dot.down { background: var(--red); }
+.updated { color: var(--dim); margin-left: auto; font-size: 13px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; min-width: 0; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 0 0 10px; }
+.big { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.sub { color: var(--dim); font-size: 13px; }
+.wide { grid-column: 1 / -1; }
+.half { grid-column: span 2; }
+@media (max-width: 560px) { .half { grid-column: 1 / -1; } }
+table { width: 100%; border-collapse: collapse; }
+td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+th { color: var(--dim); font-weight: 500; font-size: 13px; }
+tr:last-child td { border-bottom: none; }
+.num { text-align: right; }
+.meter { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 8px 0 4px; }
+.meter > div { height: 100%; background: var(--bar); }
+.bars { display: flex; align-items: flex-end; gap: 6px; height: 90px; margin-top: 6px; }
+.bars div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.bars span.b { width: 100%; background: var(--bar); border-radius: 4px 4px 0 0; min-height: 2px; }
+.bars span.l { font-size: 11px; color: var(--dim); margin-top: 4px; }
+.bars span.v { font-size: 11px; color: var(--dim); }
+svg.spark { width: 100%; height: 70px; display: block; margin-top: 6px; }
+svg.spark path.line { fill: none; stroke: var(--bar); stroke-width: 2; vector-effect: non-scaling-stroke; }
+svg.spark path.area { fill: var(--bar); opacity: .12; }
+.errors { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--red);
+          white-space: pre-wrap; word-break: break-word; margin: 0; }
+.ok { color: var(--green); }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--line); font-size: 12px; margin: 2px 4px 2px 0; }
+code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.empty { color: var(--dim); }
+.stale { color: var(--orange); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Azeroth (bots)</h1>
+    <span class="status"><span class="dot" id="dot"></span><span id="state">Loading…</span></span>
+    <span class="updated" id="updated"></span>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Playing</h2>
+      <div class="big" id="players-n">–</div>
+      <div class="sub" id="players-sub"></div>
+    </section>
+    <section class="card">
+      <h2>Bots online</h2>
+      <div class="big" id="bots-n">–</div>
+      <div class="sub" id="bots-sub"></div>
+    </section>
+    <section class="card">
+      <h2>Game server</h2>
+      <div class="big" id="cpu">–</div>
+      <div class="sub" id="cpu-sub"></div>
+    </section>
+    <section class="card">
+      <h2>Memory</h2>
+      <div class="big" id="mem">–</div>
+      <div class="meter"><div id="mem-bar" style="width:0"></div></div>
+      <div class="sub" id="mem-sub"></div>
+    </section>
+
+    <section class="card half">
+      <h2>Who's on</h2>
+      <table><thead><tr><th>Name</th><th>Race</th><th>Class</th><th class="num">Level</th></tr></thead>
+        <tbody id="players"></tbody></table>
+    </section>
+    <section class="card half">
+      <h2>Bots by level</h2>
+      <div class="bars" id="levels"></div>
+    </section>
+
+    <section class="card half">
+      <h2>Bots online, last 24 hours</h2>
+      <svg class="spark" id="spark-bots" viewBox="0 0 100 40" preserveAspectRatio="none"></svg>
+      <div class="sub" id="spark-bots-sub"></div>
+    </section>
+    <section class="card half">
+      <h2>Game server CPU, last 24 hours</h2>
+      <svg class="spark" id="spark-cpu" viewBox="0 0 100 40" preserveAspectRatio="none"></svg>
+      <div class="sub" id="spark-cpu-sub"></div>
+    </section>
+
+    <section class="card half">
+      <h2>Backups</h2>
+      <table><tbody id="backups"></tbody></table>
+    </section>
+    <section class="card half">
+      <h2>Settings &amp; software</h2>
+      <div id="settings"></div>
+      <div class="sub" id="software" style="margin-top:8px"></div>
+    </section>
+
+    <section class="card wide">
+      <h2>Latest server errors</h2>
+      <pre class="errors" id="errors"></pre>
+      <div class="sub">The bots' harmless pathing, cooldown and spell messages are left out.</div>
+    </section>
+  </div>
+</main>
+<script>
+const RACES = {1:"Human",2:"Orc",3:"Dwarf",4:"Night Elf",5:"Undead",6:"Tauren",7:"Gnome",8:"Troll"};
+const CLASSES = {1:"Warrior",2:"Paladin",3:"Hunter",4:"Rogue",5:"Priest",7:"Shaman",8:"Mage",9:"Warlock",11:"Druid"};
+const SETTINGS = {BOTS:"Bots", BOTS_NEAR_PLAYERS:"Bots come to players", BOTS_SYNC_LEVEL:"Bots near players' level",
+  RATE_XP:"Experience", RATE_LOOT:"Loot", RATE_GOLD:"Gold", RATE_REPUTATION:"Reputation", RATE_REST:"Rested"};
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const gb = b => (b / 1073741824).toFixed(1) + " GB";
+const ago = t => {
+  const s = Math.max(0, Date.now() / 1000 - t);
+  if (s < 90) return "just now";
+  if (s < 5400) return Math.round(s / 60) + " minutes ago";
+  if (s < 129600) return Math.round(s / 3600) + " hours ago";
+  return Math.round(s / 86400) + " days ago";
+};
+
+function state(s) {
+  const v = s.services;
+  if (v.realmd === "healthy" && v.mangosd === "healthy") return ["up", "Running"];
+  if (v.mangosd === "starting" || v.realmd === "starting") return ["working", "Starting"];
+  if (v.mangosd === "missing") return ["down", "Not set up"];
+  return ["down", "Stopped"];
+}
+
+function spark(id, points, max) {
+  const svg = $(id);
+  if (points.length < 2) { svg.innerHTML = ""; return; }
+  const t0 = points[0][0], t1 = points[points.length - 1][0], span = Math.max(1, t1 - t0);
+  const m = Math.max(max || 0, ...points.map(p => p[1]), 1);
+  const xy = points.map(p => [((p[0] - t0) / span * 100).toFixed(2), (40 - p[1] / m * 38).toFixed(2)]);
+  const line = "M" + xy.map(p => p.join(",")).join("L");
+  svg.innerHTML = `<path class="area" d="${line}L100,40L0,40Z"/><path class="line" d="${line}"/>`;
+}
+
+async function load() {
+  let s, hist = [];
+  try {
+    s = await (await fetch("status.json?t=" + Date.now(), {cache: "no-store"})).json();
+  } catch (e) {
+    $("state").textContent = "Can't read the server's status";
+    $("dot").className = "dot down";
+    return;
+  }
+  try {
+    const text = await (await fetch("history.tsv?t=" + Date.now(), {cache: "no-store"})).text();
+    hist = text.trim().split("\n").map(l => l.split("\t").map(Number)).filter(r => r.length >= 5);
+  } catch (e) {}
+
+  const [cls, label] = state(s);
+  $("dot").className = "dot " + cls;
+  $("state").textContent = label + (s.address ? " at " + s.address : "");
+  const age = Date.now() / 1000 - s.updated;
+  $("updated").innerHTML = age > 180 ? `<span class="stale">Not updated for ${Math.round(age / 60)} minutes</span>`
+                                     : "Updated " + new Date(s.updated * 1000).toLocaleTimeString();
+  document.title = `Azeroth Server · ${label}`;
+
+  $("players-n").textContent = s.players.length;
+  $("players-sub").textContent = s.players.length ? s.players.map(p => p.name).join(", ") : "Nobody right now";
+  $("bots-n").textContent = s.bots;
+  $("bots-sub").textContent = s.settings.BOTS ? `of ${s.settings.BOTS} set` : "";
+  $("cpu").textContent = (s.game.cpu / 100).toFixed(1) + " cores";
+  $("cpu-sub").textContent = `of ${s.machine.cores} · machine load ${s.machine.load}` +
+    (s.since && cls !== "down" ? ` · up since ${new Date(s.since).toLocaleString()}` : "");
+  const used = s.machine.memory - s.machine.available;
+  $("mem").textContent = gb(s.machine.available) + " free";
+  $("mem-bar").style.width = (used / s.machine.memory * 100).toFixed(1) + "%";
+  $("mem-sub").textContent = `of ${gb(s.machine.memory)} · game server ${gb(s.game.memory)}, database ${gb(s.databaseMemory)}`;
+
+  $("players").innerHTML = s.players.length ? s.players.map(p =>
+    `<tr><td>${esc(p.name)}</td><td>${RACES[p.race] || p.race}</td><td>${CLASSES[p.class] || p.class}</td><td class="num">${p.level}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">Nobody is playing.</td></tr>`;
+
+  const maxLevel = Math.max(1, ...s.botLevels.map(b => b.count));
+  $("levels").innerHTML = s.botLevels.length ? s.botLevels.map(b =>
+    `<div><span class="v">${b.count}</span><span class="b" style="height:${b.count / maxLevel * 70}%"></span><span class="l">${b.from}–${b.from + 9}</span></div>`).join("")
+    : `<span class="empty">No bots online.</span>`;
+
+  spark("spark-bots", hist.map(r => [r[0], r[2]]));
+  spark("spark-cpu", hist.map(r => [r[0], r[3]]), 100);
+  if (hist.length) {
+    const bots = hist.map(r => r[2]), cpu = hist.map(r => r[3]);
+    $("spark-bots-sub").textContent = `${Math.min(...bots)}–${Math.max(...bots)} bots · ${Math.max(...hist.map(r => r[1]))} players at most`;
+    $("spark-cpu-sub").textContent = `average ${(cpu.reduce((a, b) => a + b, 0) / cpu.length / 100).toFixed(1)} cores, peak ${(Math.max(...cpu) / 100).toFixed(1)}`;
+  }
+
+  $("backups").innerHTML = s.backups.length ? s.backups.map(b =>
+    `<tr><td>${new Date(b.time * 1000).toLocaleString()}${b.name.includes("before-restore") ? ' <span class="pill">before a restore</span>' : ""}</td><td class="num sub">${(b.bytes / 1048576).toFixed(1)} MB</td></tr>`).join("")
+    : `<tr><td class="empty">No backups yet.</td></tr>`;
+
+  $("settings").innerHTML = Object.entries(SETTINGS).filter(([k]) => s.settings[k] !== undefined).map(([k, name]) => {
+    let v = s.settings[k];
+    if (k.startsWith("RATE_")) v = "×" + v;
+    else if (k !== "BOTS") v = v === "1" ? "on" : "off";
+    return `<span class="pill">${name}: ${esc(v)}</span>`;
+  }).join("");
+  const sw = s.software;
+  $("software").innerHTML = `CMaNGOS <code>${esc((sw.CMANGOS_REF || "").slice(0, 7))}</code> · playerbots <code>${esc((sw.PLAYERBOTS_REF || "").slice(0, 7))}</code> · classic-db <code>${esc((sw.CLASSICDB_REF || "").slice(0, 7))}</code>` +
+    (s.updated_software ? ` · updated ${new Date(s.updated_software).toLocaleDateString()}` : "");
+
+  $("errors").innerHTML = s.errors.length ? s.errors.map(esc).join("\n") : `<span class="ok">No errors lately.</span>`;
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

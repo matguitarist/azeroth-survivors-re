@@ -22,3 +22,12 @@ services:
   install:
     environment:
       - REALM_ADDRESS=${LAN_IP:?set LAN_IP in .env}
+  # The dashboard, for any browser at home: the files `home-status` writes every minute, served
+  # read-only. It stays up while the game is stopped, to say so.
+  dashboard:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - ${LAN_IP:?set LAN_IP in .env}:8095:80
+    volumes:
+      - ./storage/dashboard:/usr/share/nginx/html:ro

@@ -15,17 +15,24 @@ fi
 
 # Unraid stops every container with `docker stop` when Docker shuts down, which `unless-stopped`
 # takes for a stop by hand, and starts only what its autostart list names: after an `up`, the
-# server's containers go on that list, the database first with time to open before the others; a
-# `stop` or `down` takes them off, so a server stopped from the launcher stays stopped.
+# containers it names (all, if none) go on that list, the database first with time to open before
+# the others; a `stop` takes the game's off, so a server stopped from the launcher stays stopped,
+# and a `down` all of them. The dashboard stays on through a stop.
 list=/var/lib/docker/unraid-autostart
 if [[ -f $list ]]; then
     case " $* " in
     " up "*)
-        for c in "$p-database-1 10" "$p-realmd-1" "$p-mangosd-1"; do
+        named=" $(printf '%s ' "$@" | sed -e 's/^up //' -e 's/-[^ ]* //g') "
+        for c in "$p-database-1 10" "$p-realmd-1" "$p-mangosd-1" "$p-dashboard-1"; do
+            s=${c#"$p-"}; s=${s%%-1*}
+            [[ $named == "  " || $named == *" $s "* ]] || continue
             grep -q "^${c%% *}\( \|$\)" "$list" || echo "$c" >>"$list"
         done
         ;;
-    *" stop "* | *" down "*)
+    *" stop "*)
+        sed -i -e "/^$p-database-1/d" -e "/^$p-realmd-1/d" -e "/^$p-mangosd-1/d" "$list"
+        ;;
+    *" down "*)
         sed -i "/^$p-/d" "$list"
         ;;
     esac

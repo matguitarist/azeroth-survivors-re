@@ -76,7 +76,12 @@ The launcher:
   `RATE_REPUTATION`, `RATE_REST`) that `compose.yaml` passes on as CMaNGOS (`Mangosd_`) and
   playerbots (`PlayerBots_`) settings, then recreate `mangosd`; bringing bots to players also
   shortens how often they move on (`BOTS_MOVE_MIN`, `BOTS_MOVE_MAX`). The launcher keeps the
-  server's scripts and compose files current on each look. Nothing is forwarded to the internet. `home-backup` dumps the accounts and characters
+  server's scripts and compose files current on each look. `home-status` writes the server's state
+  (players, bots by level, CPU and memory, backups, software, settings, the latest real errors)
+  into `storage/dashboard/` every minute from cron, with a day of history, and the `dashboard`
+  container (`nginx`, read-only, no Docker socket or database password) serves it with
+  `dashboard.html` at `http://<LAN_IP>:8095` for any browser at home; it stays up while the game is
+  stopped. Settings › Home Server shows the same live, with Open Dashboard. Nothing is forwarded to the internet. `home-backup` dumps the accounts and characters
   nightly at 4:30 (a dynamix cron file on Unraid, else root's crontab; to
   `/mnt/user/backups/azeroth-survivors-cmangos`, else `backups/`, 14 kept), and Settings › Backups & Updates backs up and restores on demand, a restore saving the state
   it replaces first. `home-update check` compares the commits the image was built from (`.refs`,

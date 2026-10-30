@@ -89,6 +89,25 @@ final class HomeServer: ObservableObject {
     @Published private(set) var software: Software?
     /// Why the last update did not finish, if it did not; the old server was put back.
     @Published private(set) var updateFailed: String?
+    /// The server right now, while it runs (`loadStats`).
+    @Published private(set) var stats: Stats?
+
+    struct Stats: Equatable {
+        struct Player: Equatable, Hashable {
+            let name: String
+            let level: Int
+        }
+        /// The people playing: every character online that is not a random bot's.
+        let players: [Player]
+        let bots: Int
+        /// The game server's CPU, in cores (docker's percentage is per core).
+        let cores: Double
+        let machineCores: Int
+        let memory: Int64
+        let machineMemory: Int64
+        let machineAvailable: Int64
+        let since: Date?
+    }
 
     struct Software: Equatable {
         struct Repo: Equatable {
@@ -124,7 +143,8 @@ final class HomeServer: ObservableObject {
     /// The game files the map tools read, of the client's Data folder.
     /// The recipe's scripts and compose files the launcher keeps current on the server; the
     /// compose files take effect at the next start or Apply.
-    private static let scripts = ["home-compose", "home-backup", "home-setup", "home-update", "compose.yaml", "compose.lan.yaml"]
+    private static let scripts = ["home-compose", "home-backup", "home-setup", "home-update", "home-status",
+                                  "dashboard.html", "compose.yaml", "compose.lan.yaml"]
     private static let mpqs = ["dbc.MPQ", "terrain.MPQ", "model.MPQ", "texture.MPQ", "wmo.MPQ", "patch.MPQ", "patch-2.MPQ"]
 
     private init() {}
@@ -150,6 +170,9 @@ final class HomeServer: ObservableObject {
         setUpDone = false
         if !isBusy { phase = .notConfigured }
     }
+
+    /// The dashboard `home-status` keeps, for any browser on the network.
+    var dashboard: URL? { address.isEmpty ? nil : URL(string: "http://\(address):8095/") }
 
     /// The address the game dials and the ports bind to.
     var address: String { host.split(separator: "@").last.map(String.init) ?? host }
@@ -313,7 +336,8 @@ final class HomeServer: ObservableObject {
 
     func stop() async {
         guard isSetUp, !isBusy else { return }
-        await run("Stopping the server…") { try await self.compose("stop") }
+        // The dashboard keeps running, to say the game is stopped.
+        await run("Stopping the server…") { try await self.compose("stop realmd mangosd database") }
     }
 
     func restart() async {
@@ -421,7 +445,7 @@ final class HomeServer: ObservableObject {
         let scripts = Self.scripts.map { recipe.appendingPathComponent($0).path }
         guard scripts.allSatisfy(FileManager.default.fileExists(atPath:)) else { return }
         try? await rsync(scripts)
-        _ = try? await ssh("\(folder)/home-backup schedule", quiet: true)
+        _ = try? await ssh("\(folder)/home-backup schedule; \(folder)/home-status schedule", quiet: true)
     }
 
     private func loadBackups() async {
@@ -455,6 +479,63 @@ final class HomeServer: ObservableObject {
             try await self.ssh("\(self.folder)/home-backup restore \(backup.name)")
             try await self.waitHealthy(minutes: 15)
         }
+    }
+
+    // MARK: - Stats
+
+    /// One look at who is on and what the game server takes, for Settings › Home Server.
+    func loadStats() async {
+        guard phase == .running else { stats = nil; return }
+        let p = Self.project
+        let script = """
+            echo "docker=$(docker stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}' \(p)-mangosd-1)"
+            echo "since=$(docker inspect -f '{{.State.StartedAt}}' \(p)-mangosd-1)"
+            echo "machine=$(free -b | awk '/^Mem:/ {print $2"|"$7}')|$(nproc)"
+            docker exec \(p)-database-1 mariadb -umangos -pmangos -N -e "SELECT CONCAT('player=', c.name, '|', c.level) FROM classiccharacters.characters c JOIN classicrealmd.account a ON a.id = c.account WHERE c.online = 1 AND a.username NOT LIKE 'RNDBOT%' ORDER BY c.name; SELECT CONCAT('bots=', COUNT(*)) FROM classiccharacters.characters c JOIN classicrealmd.account a ON a.id = c.account WHERE c.online = 1 AND a.username LIKE 'RNDBOT%'"
+            """
+        guard let out = try? await ssh(script, quiet: true) else { return }
+        stats = Self.parseStats(out)
+    }
+
+    nonisolated static func parseStats(_ out: String) -> Stats? {
+        var players: [Stats.Player] = []
+        var kv: [String: String] = [:]
+        for line in out.split(whereSeparator: \.isNewline) {
+            let pair = line.split(separator: "=", maxSplits: 1).map(String.init)
+            guard pair.count == 2 else { continue }
+            if pair[0] == "player" {
+                let f = pair[1].split(separator: "|")
+                if f.count == 2, let level = Int(f[1]) { players.append(Stats.Player(name: String(f[0]), level: level)) }
+            } else {
+                kv[pair[0]] = pair[1]
+            }
+        }
+        // `49.29%|5.419GiB / 22.92GiB`
+        let docker = (kv["docker"] ?? "").split(separator: "|").map(String.init)
+        let machine = (kv["machine"] ?? "").split(separator: "|").map(String.init)
+        guard docker.count == 2, machine.count == 3,
+              let percent = Double(docker[0].replacingOccurrences(of: "%", with: "")),
+              let total = Int64(machine[0]), let available = Int64(machine[1]), let cores = Int(machine[2])
+        else { return nil }
+        let since = kv["since"].flatMap { s -> Date? in
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            // Docker gives nanoseconds; the formatter reads up to milliseconds.
+            let trimmed = s.replacingOccurrences(of: #"(\.\d{3})\d*Z$"#, with: "$1Z", options: .regularExpression)
+            return f.date(from: trimmed)
+        }
+        return Stats(players: players, bots: Int(kv["bots"] ?? "") ?? 0, cores: percent / 100, machineCores: cores,
+                     memory: bytes(docker[1].components(separatedBy: " / ").first ?? ""),
+                     machineMemory: total, machineAvailable: available, since: since)
+    }
+
+    /// Docker's `5.419GiB`, `512MiB`, `900kB`.
+    nonisolated static func bytes(_ s: String) -> Int64 {
+        let units: [(String, Double)] = [("GiB", 1_073_741_824), ("MiB", 1_048_576), ("KiB", 1024), ("GB", 1e9), ("MB", 1e6), ("kB", 1e3), ("B", 1)]
+        for (u, m) in units where s.hasSuffix(u) {
+            return Int64((Double(s.dropLast(u.count)) ?? 0) * m)
+        }
+        return 0
     }
 
     // MARK: - Updates

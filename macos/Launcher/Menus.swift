@@ -67,6 +67,8 @@ struct LauncherCommands: Commands {
                     Button("Start Home Server") { Task { await home.start() } }
                         .disabled(!home.isSetUp || home.isBusy)
                 }
+                Button("Open Home Server Dashboard") { if let url = home.dashboard { NSWorkspace.shared.open(url) } }
+                    .disabled(!home.isSetUp || home.dashboard == nil)
                 Button("Back Up Home Server Now") { Task { await home.backUpNow() } }
                     .disabled(!home.isSetUp || home.isBusy || game.running)
                 Button("Home Server Settings…") { settings(.homeServer) }

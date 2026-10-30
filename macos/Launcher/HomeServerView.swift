@@ -228,11 +228,41 @@ struct HomeServerSettings: View {
                             Button("Start Server") { Task { await home.start() } }
                         }
                         Spacer()
+                        if let url = home.dashboard {
+                            Button("Open Dashboard") { NSWorkspace.shared.open(url) }
+                                .help("The server's page at \(url.absoluteString), for any browser at home")
+                        }
                         Button("Show Logs") { showLogs(.homeServer, openWindow) }
                     }
                     .disabled(home.isBusy)
                 } else if home.phase == .notSetUp {
                     Button("Set Up Home Server") { Task { await home.setUp() } }
+                }
+            }
+
+            if home.phase == .running, let stats = home.stats {
+                Section("Right now") {
+                    LabeledContent("Playing") {
+                        Text(stats.players.isEmpty ? "Nobody"
+                             : stats.players.map { "\($0.name) (\($0.level))" }.formatted(.list(type: .and)))
+                            .multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("Bots online") { Text("\(stats.bots)").monospacedDigit() }
+                    LabeledContent("Game server") {
+                        Text("\(stats.cores.formatted(.number.precision(.fractionLength(1)))) of \(stats.machineCores) cores · \(gb(stats.memory)) of memory")
+                            .monospacedDigit()
+                    }
+                    LabeledContent("Memory free") {
+                        Text("\(gb(stats.machineAvailable)) of \(gb(stats.machineMemory))")
+                            .monospacedDigit()
+                            .foregroundStyle(Double(stats.machineAvailable) < Double(stats.machineMemory) * 0.1 ? .red : .primary)
+                    }
+                    if let since = stats.since {
+                        LabeledContent("Up since") { Text(since.formatted(.relative(presentation: .named))) }
+                    }
+                    if let last = home.backups.first {
+                        LabeledContent("Last backup") { Text(last.date.formatted(.relative(presentation: .named))) }
+                    }
                 }
             }
 
@@ -266,6 +296,13 @@ struct HomeServerSettings: View {
         }
         .formStyle(.grouped)
         .task { await home.refresh() }
+        .task(id: home.phase == .running) {
+            // Live while this pane is open.
+            while !Task.isCancelled, home.phase == .running {
+                await home.loadStats()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
         .homeServerPolling()
         .sheet(isPresented: $newAccount) {
             sheet { AccountForm(title: "New account", action: "Create", home: true) { newAccount = false } }
@@ -278,6 +315,10 @@ struct HomeServerSettings: View {
         } message: {
             Text("Its containers, databases, image and folder on \(home.address) are deleted. This cannot be undone.")
         }
+    }
+
+    private func gb(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .memory)
     }
 
     private func sheet<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {

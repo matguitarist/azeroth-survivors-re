@@ -1,0 +1,126 @@
+#!/bin/bash
+# The home server's dashboard: every minute cron writes what the server is doing into
+# `storage/dashboard/` (`status.json`, a day of `history.tsv`), which the `dashboard` container
+# (`compose.lan.yaml`) serves with `dashboard.html` on the LAN address, port 8095. The page reads
+# only these files: the container gets no Docker socket and no database password.
+#
+#   home-status now        write the status
+#   home-status schedule   run `now` every minute and keep the dashboard container up
+set -euo pipefail
+cd "$(dirname "$0")"
+p=azeroth-survivors-cmangos
+out=storage/dashboard
+mkdir -p "$out"
+
+# A JSON string from anything: backslashes, quotes and control characters escaped.
+js() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\037')"; }
+
+health() { docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$p-$1-1" 2>/dev/null || echo missing; }
+
+sql() { docker exec "$p-database-1" mariadb -umangos -pmangos -N -B -e "$1" 2>/dev/null; }
+
+# Lines CMaNGOS logs as errors about its bots that are no problem (as the launcher's Logs window).
+noise='AbstractPathMovementGenerator::Initialize Path empty|is not moving but have spline movement enabled|try to add and already existing cooldown|CastSpell: unknown spell id 0 |Cannot teleport bot .* - no locations available'
+
+now() {
+    local realmd mangosd database since cpu=0 mem=0 dbmem=0 players="" bots=0 brackets="" errors="" backups=""
+    realmd=$(health realmd) mangosd=$(health mangosd) database=$(health database)
+    since=$(docker inspect -f '{{.State.StartedAt}}' "$p-mangosd-1" 2>/dev/null || true)
+    # `49.15%|5.419GiB / 22.92GiB`, in bytes.
+    while IFS='|' read -r name c m; do
+        m=$(numfmt --from=iec-i --suffix=B "${m%% /*}" 2>/dev/null | tr -d B || echo 0)
+        case $name in
+        *mangosd*) cpu=${c%\%} mem=${m:-0} ;;
+        *database*) dbmem=${m:-0} ;;
+        esac
+    done < <(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' "$p-mangosd-1" "$p-database-1" 2>/dev/null || true)
+
+    if [ "$database" = healthy ]; then
+        while IFS=$'\t' read -r name level race class; do
+            [ -n "$name" ] || continue
+            players+="${players:+,}{\"name\":$(js "$name"),\"level\":$level,\"race\":$race,\"class\":$class}"
+        done < <(sql "SELECT c.name, c.level, c.race, c.class FROM classiccharacters.characters c JOIN classicrealmd.account a ON a.id = c.account WHERE c.online = 1 AND a.username NOT LIKE 'RNDBOT%' ORDER BY c.level DESC, c.name")
+        while IFS=$'\t' read -r bracket n; do
+            [ -n "$bracket" ] || continue
+            brackets+="${brackets:+,}{\"from\":$bracket,\"count\":$n}"
+            bots=$((bots + n))
+        done < <(sql "SELECT FLOOR((c.level - 1) / 10) * 10 + 1, COUNT(*) FROM classiccharacters.characters c JOIN classicrealmd.account a ON a.id = c.account WHERE c.online = 1 AND a.username LIKE 'RNDBOT%' GROUP BY 1 ORDER BY 1")
+    fi
+
+    local log=storage/mangosd/logs/Server.log
+    if [ -f $log ]; then
+        while IFS= read -r line; do
+            errors+="${errors:+,}$(js "$line")"
+        done < <(tail -n 5000 $log | grep ' ERROR:' | grep -Ev "$noise" | tail -n 8 || true)
+    fi
+
+    while read -r name bytes epoch; do
+        [ -n "$name" ] || continue
+        backups+="${backups:+,}{\"name\":$(js "$name"),\"bytes\":$bytes,\"time\":$epoch}"
+    done < <(./home-backup list 2>/dev/null | head -n 5 || true)
+
+    local refs="" key value
+    for key in CMANGOS_REF PLAYERBOTS_REF CLASSICDB_REF; do
+        value=$(sed -n "s/^$key=//p" .refs 2>/dev/null || true)
+        [ -n "$value" ] || value=$(sed -n "s/^ARG $key=//p" Dockerfile 2>/dev/null || true)
+        refs+="${refs:+,}$(js "$key"):$(js "$value")"
+    done
+    local updated settings=""
+    updated=$(sed -n 's/^UPDATED=//p' .refs 2>/dev/null || true)
+    for key in BOTS BOTS_NEAR_PLAYERS BOTS_SYNC_LEVEL RATE_XP RATE_LOOT RATE_GOLD RATE_REPUTATION RATE_REST; do
+        value=$(sed -n "s/^$key=//p" .env 2>/dev/null || true)
+        [ -z "$value" ] || settings+="${settings:+,}$(js "$key"):$(js "$value")"
+    done
+
+    local total available cores load
+    read -r total available < <(free -b | awk '/^Mem:/ {print $2, $7}')
+    cores=$(nproc)
+    load=$(cut -d' ' -f1 /proc/loadavg)
+    local nplayers
+    nplayers=$(printf '%s' "$players" | grep -o '"name"' | wc -l)
+
+    cat >"$out/status.json.part" <<EOF
+{"updated":$(date +%s),"address":$(js "$(sed -n 's/^LAN_IP=//p' .env 2>/dev/null || true)"),
+"services":{"realmd":$(js "$realmd"),"mangosd":$(js "$mangosd"),"database":$(js "$database")},
+"since":$(js "$since"),
+"players":[${players}],"bots":$bots,"botLevels":[${brackets}],
+"machine":{"cores":$cores,"load":$load,"memory":$total,"available":$available},
+"game":{"cpu":$cpu,"memory":$mem},"databaseMemory":$dbmem,
+"backups":[${backups}],"software":{${refs}},"updated_software":$(js "$updated"),
+"settings":{${settings}},"errors":[${errors}]}
+EOF
+    mv "$out/status.json.part" "$out/status.json"
+
+    # A day of minutes: time, players, bots, game server CPU (% of a core), its memory (bytes).
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$nplayers" "$bots" "$cpu" "$mem" >>"$out/history.tsv"
+    tail -n 1440 "$out/history.tsv" >"$out/history.tsv.part" && mv "$out/history.tsv.part" "$out/history.tsv"
+    cp -f dashboard.html "$out/index.html"
+    chmod -R a+rX "$out"
+}
+
+case "${1:-}" in
+now)
+    now
+    ;;
+schedule)
+    line="* * * * * $PWD/home-status now >/dev/null 2>&1"
+    if [[ -d /boot/config/plugins/dynamix ]]; then
+        cron=/boot/config/plugins/dynamix/azeroth-survivors-status.cron
+        if ! grep -qxF "$line" "$cron" 2>/dev/null; then
+            printf '# Azeroth Survivors server dashboard:\n%s\n' "$line" >"$cron"
+            update_cron
+        fi
+    elif ! crontab -l 2>/dev/null | grep -qxF "$line"; then
+        { crontab -l 2>/dev/null | grep -v 'home-status now' || true; echo "$line"; } | crontab -
+    fi
+    now
+    if [ "$(docker inspect -f '{{.State.Running}}' "$p-dashboard-1" 2>/dev/null)" != true ]; then
+        ./home-compose up -d dashboard >/dev/null 2>&1
+    fi
+    echo scheduled
+    ;;
+*)
+    echo "usage: home-status now|schedule" >&2
+    exit 2
+    ;;
+esac

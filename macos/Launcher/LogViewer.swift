@@ -201,12 +201,15 @@ enum LogReader {
 
     /// What CMaNGOS logs as errors about its bots, which is not a problem: a bot that cannot path
     /// to a spot picks another, a stale movement flag clears itself, a repeated cooldown or a spell
-    /// without an id is ignored. Shown as debug lines from "bots", so errors are the real ones.
+    /// without an id is ignored; a bot with nowhere near the players to go stays put. Shown as debug
+    /// lines from "bots", so errors are the real ones.
     nonisolated static let botNoise = [
         "AbstractPathMovementGenerator::Initialize Path empty",
         "is not moving but have spline movement enabled",
         "try to add and already existing cooldown",
         "CastSpell: unknown spell id 0 ",
+        // Bots with no spot for their level in a zone someone plays in stay where they are.
+        "- no locations available",
     ]
 
     nonisolated static func isBotNoise(_ message: String) -> Bool {
